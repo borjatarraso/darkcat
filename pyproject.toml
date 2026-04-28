@@ -1,0 +1,47 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "darkcat"
+version = "0.2.0"
+description = "Multi-protocol darknet & overlay-network crawler (Tor, I2P, IPFS, Freenet, Lokinet, GNUnet, ZeroNet, Gemini, Gopher, Spartan, NEX, Hyper, Yggdrasil, cjdns, Namecoin, EmerCoin, ENS, Handshake, Unstoppable, OpenNIC and more) with topic filtering, CLI and Textual TUI"
+readme = "README.md"
+requires-python = ">=3.9"
+license = { text = "GPL-3.0-or-later" }
+authors = [
+    { name = "Overdrive (Borja Tarraso)", email = "borja.tarraso@member.fsf.org" },
+]
+maintainers = [
+    { name = "Overdrive (Borja Tarraso)", email = "borja.tarraso@member.fsf.org" },
+]
+keywords = [
+    "darknet", "tor", "onion", "i2p", "ipfs", "freenet", "lokinet",
+    "gemini", "gopher", "crawler", "overlay-network",
+]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Environment :: Console",
+    "Environment :: Console :: Curses",
+    "Intended Audience :: Information Technology",
+    "Intended Audience :: System Administrators",
+    "License :: OSI Approved :: GNU General Public License v3 or later (GPLv3+)",
+    "Operating System :: POSIX :: Linux",
+    "Programming Language :: Python :: 3",
+    "Topic :: Internet :: WWW/HTTP :: Indexing/Search",
+    "Topic :: Security",
+]
+dependencies = [
+    "requests>=2.31",
+    "PySocks>=1.7.1",
+    "beautifulsoup4>=4.12",
+    "lxml>=4.9",
+    "textual>=0.60",
+]
+
+[project.scripts]
+darkcat = "darkcat.cli:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["darkcat*"]
