@@ -1,13 +1,23 @@
+<p align="center">
+  <img src="src/darkcat/assets/logos/darkcat_rounded_transparent_256x256.png"
+       alt="Darkcat" width="256" height="256">
+</p>
+
 # Darkcat
 
 **Maintainer:** Overdrive (Borja Tarraso) &lt;borja.tarraso@member.fsf.org&gt;
 **License:** GPL-3.0-or-later
+**Source:** <https://github.com/borjatarraso/darkcat>
 
-A command-line crawler for darknets and obscure overlay networks. It
-classifies every URL by protocol, routes it through the right transport,
-crawls BFS from seed lists with topic-keyword scoring, and stores everything
-in SQLite (FTS5). Ships with both a CLI (`darkcat …`) and a Textual TUI
-(`darkcat tui`).
+A crawler for darknets and obscure overlay networks. It classifies every
+URL by protocol, routes it through the right transport, crawls BFS from
+seed lists with topic-keyword scoring, and stores everything in SQLite
+(FTS5). Ships in four flavours over the same engine:
+
+- **CLI** — `darkcat …` (one-shot subcommands)
+- **Shell / REPL** — `darkcat shell` (interactive line editor)
+- **TUI** — `darkcat tui` (Textual full-screen terminal app)
+- **GUI** — `darkcat gui` (Tkinter desktop window)
 
 Run `darkcat --about` for a one-line summary, `darkcat -h` for the full
 reference, or `darkcat -la` to discover curated entry points across every
@@ -44,18 +54,63 @@ supported protocol.
 ## Install
 
 ```sh
-cd tor-search
+cd darkcat
 python -m venv .venv
 . .venv/bin/activate
 pip install -e .
 ```
 
-Or, without installing:
+Or, without installing — use the bundled launcher (auto-detects `.venv/`,
+falls back to system `python3`):
 
 ```sh
 pip install -r requirements.txt
-python -m darkcat status
+./darkcat status
 ```
+
+### Desktop integration (Linux)
+
+A FreeDesktop entry and hicolor icons live under `share/`. Install them
+into your prefix to get a "Darkcat" launcher in the application menu and
+correct icons in the GUI's title bar / taskbar:
+
+```sh
+install -Dm644 share/applications/darkcat.desktop \
+    ~/.local/share/applications/darkcat.desktop
+for s in 64 128 256 512 1024; do
+  install -Dm644 "share/icons/hicolor/${s}x${s}/apps/darkcat.png" \
+      "$HOME/.local/share/icons/hicolor/${s}x${s}/apps/darkcat.png"
+done
+update-desktop-database ~/.local/share/applications 2>/dev/null || true
+```
+
+System-wide packagers can drop the same trees under `/usr/share/`.
+
+### Shell completion (bash / zsh / fish)
+
+Darkcat soft-imports [`argcomplete`](https://kislyuk.github.io/argcomplete/)
+to power tab-completion of subcommands and flags. Install it (it's a
+no-op for runtime if you never enable completion):
+
+```sh
+pip install -e '.[completion]'
+```
+
+Then, for the current shell:
+
+```sh
+# bash
+eval "$(register-python-argcomplete darkcat)"
+
+# zsh
+autoload -U bashcompinit && bashcompinit
+eval "$(register-python-argcomplete darkcat)"
+
+# fish
+register-python-argcomplete --shell fish darkcat | source
+```
+
+Add the line to your shell's rc file to make it permanent.
 
 ## Daemons (Linux examples)
 
@@ -121,6 +176,172 @@ darkcat top --limit 30 --protocol tor
 darkcat stats
 ```
 
+## Leak / credential scan
+
+Pattern-based detection of credential dumps, API keys, private keys,
+credit cards, BIP-39 seed phrases, SQL dumps, and breach-marker keywords
+in already-crawled pages. Findings store a salted SHA-256 of each secret
+plus a redacted preview — never the raw secret.
+
+```sh
+# Scan everything we've crawled, restricted to onion services,
+# only flag mentions of your domain.
+darkcat scan --target example.com --protocol tor
+
+# One-shot scan of a live paste / leak-mirror URL (doesn't store body).
+darkcat scan --url http://pastedata2…onion/leaks/2026-04
+
+# Restrict to specific categories, salt the digests so they're not
+# comparable to anyone else's database.
+darkcat scan --category email_password github_token --salt my-secret
+
+# Browse / filter the findings table.
+darkcat findings --category email_password -n 100
+darkcat findings --target example.com
+```
+
+Categories: `email_password`, `aws_access_key`, `aws_secret_key`,
+`github_token`, `slack_token`, `stripe_key`, `google_api_key`,
+`discord_token`, `jwt`, `private_key`, `pgp_block`, `credit_card`,
+`sql_dump`, `seed_phrase`, `breach_marker`.
+
+The intent is detection — surfacing where leaks appear so defenders /
+threat-intel teams can monitor and respond. Storage is hashed + redacted
+by design; the digest column lets you correlate against IOC feeds without
+re-identifying anyone.
+
+### Watchlist + alerting
+
+Register patterns; when a *new* finding matches, the configured sink fires
+and an `alerts` row is recorded.
+
+```sh
+darkcat watch add --target example.com --sink notify --note "my domain"
+darkcat watch add --category github_token --sink webhook:https://hooks.example/x
+darkcat watch add --target '\.gov$' --regex --sink file:/var/log/darkcat-alerts.jsonl
+darkcat watch list
+darkcat watch test 1                # synthesize a finding through sink #1
+darkcat alerts -n 50
+```
+
+Sinks: `log` (stdout) · `notify` (libnotify desktop notification via
+`notify-send`) · `file:PATH` (append one JSON object per alert) ·
+`webhook:URL` (HTTP POST a JSON payload).
+
+### Diff / change watch
+
+`record_page` snapshots `(url, content_hash, title, text, captured_at)`
+into a `page_history` table on every fetch where the text has changed. Use
+this to surface ransomware-leak-site updates, market re-listings, etc.
+
+```sh
+# URLs whose snapshots changed in the last 24h.
+darkcat diff --since 24h --protocol tor
+
+# Unified diff between the two newest snapshots for one URL.
+darkcat diff --url onion://victims-list…/
+
+# Inspect the snapshot timeline.
+darkcat history --url onion://victims-list…/
+```
+
+### IOC export (JSONL / STIX 2.1 / MISP)
+
+Emit findings as a hash-based IOC feed for SOC/TIP integration. Only the
+SHA-256 digest goes out — never the underlying secret.
+
+```sh
+darkcat export --format jsonl > findings.jsonl
+darkcat export --format stix --since 7d -o week.stix.json
+darkcat export --format misp --category email_password -o leaks.misp.json
+```
+
+## Coverage uplift
+
+### Form-based discovery (`discover`)
+
+Submit a topic query to a stack of darknet search engines (Ahmia, Haystak,
+Torch, Phobos, OnionLand, Submarine), parse their result pages, unwrap
+redirector links, and emit one URL per line on stdout — ready to pipe into
+a crawl.
+
+```sh
+darkcat discover --list-engines
+darkcat discover whistleblower > seeds.txt
+darkcat crawl --seed-file seeds.txt -t whistleblower leak securedrop -n 200
+```
+
+`--engines ahmia ahmia-onion` restricts which engines are queried;
+`--max-per-engine N` caps results.
+
+### Sitemap / feed probing (`feeds`)
+
+Probes a host's well-known paths (`sitemap.xml`, `feed`, `rss.xml`,
+`atom.xml`, `feed.json`, `.well-known/host-meta`, …) and emits the URLs
+referenced therein. Cheap coverage uplift on Gemini and any reasonably
+well-behaved clearnet site.
+
+```sh
+darkcat feeds https://blog.example.org/
+```
+
+### Encoded-link extraction
+
+The crawler now runs a second pass over each fetched page that recovers
+URLs hidden in:
+
+- inline JavaScript / data attributes (literal strings)
+- base64 chunks that decode to URL-bearing text
+- ROT13'd hostnames or URLs (`uggc://...`, `.bavba`)
+
+A standalone command surfaces the same set for inspection / debugging:
+
+```sh
+darkcat decode-links http://obfusc-mirror…onion/
+darkcat decode-links URL --diff   # only URLs the normal parser missed
+```
+
+### Image OCR (`ocr`)
+
+Fetch a page, find every `<img>`, run each image through Tesseract, and
+print the recognized text. Onion sites image-encode text to dodge
+crawlers; this re-feeds it into the topic filter and the leak scanner.
+
+```sh
+sudo dnf install tesseract     # Fedora
+sudo apt install tesseract-ocr # Debian/Ubuntu
+
+darkcat ocr http://image-encoded-leak…onion/posts/2026
+darkcat ocr URL --lang eng+rus
+```
+
+### Mirror / clone clustering (`clusters`)
+
+Groups crawled URLs by identical latest text content. Surfaces the 30
+`.onion` mirrors of the same site as a single cluster — invaluable for
+triage on dark.fail-style entry points.
+
+```sh
+darkcat clusters             # min cluster size 2
+darkcat clusters --min 5     # only clusters with 5+ mirrors
+```
+
+### HIBP-style hash-prefix server
+
+Localhost-only HTTP service over the `findings` table. Lets other tooling
+ask "do you know this hash?" without ever exposing plaintext.
+
+```sh
+darkcat serve --bind 127.0.0.1:7531
+
+# In another shell:
+curl http://127.0.0.1:7531/range/df62a
+# → <suffix>:<count>:<category>:<protocol>
+curl http://127.0.0.1:7531/digest/<full-64-hex>
+# → <category>:<protocol>:<count>  (or 404)
+curl http://127.0.0.1:7531/healthz
+```
+
 ## TUI
 
 ```sh
@@ -137,6 +358,177 @@ Opens a Textual app:
 
 Key bindings: `q` quit · `Ctrl+R` refresh status · `Ctrl+C` stop crawl ·
 `F5` refresh results table.
+
+## Shell (REPL)
+
+```sh
+darkcat shell
+```
+
+A `cmd.Cmd` loop with readline editing and history. Same commands as the
+CLI, no need to re-launch between calls:
+
+```
+darkcat> status
+darkcat> fetch gemini://geminiprotocol.net/ --show
+darkcat> crawl -p gemini -t privacy -n 30 -d 2
+darkcat> search "secure drop"
+darkcat> top -p tor -n 20
+darkcat> quit
+```
+
+`help` lists every command, `help <cmd>` shows its usage. Ctrl-D also exits.
+
+## GUI
+
+```sh
+darkcat gui
+```
+
+Tkinter desktop window with the same affordances as the TUI: status bar,
+crawl form, live log pane, sortable results table, search box, single-URL
+fetch box. Tk is part of the Python stdlib but on some Linux distros lives
+in a separate package — install `python3-tk` (Debian/Ubuntu) or
+`python3-tkinter` (Fedora) if importing Tk fails.
+
+## Operational hygiene
+
+### Tor stream isolation
+
+Each Tor fetch uses a unique `(user, password)` on the SOCKS handshake
+derived from the URL's host. With Tor's default `IsolateSOCKSAuth` flag,
+this puts every host on its own circuit — same host shares a circuit,
+different hosts don't get correlated. Default ON; turn off with
+`--no-tor-isolation` or set `cfg.tor_stream_isolation = False`.
+
+### Tor control: NEWNYM, info, bridges
+
+Talk to the Tor control port (default 9051). Auth is auto-discovered via
+`PROTOCOLINFO` (NULL / cookie / password). No `stem` dependency — pure
+stdlib socket talk.
+
+```sh
+darkcat tor newnym                       # request new identity (rate-limited)
+darkcat tor info                         # version, uptime, circuit status
+darkcat tor bridges                      # list configured bridges
+darkcat tor bridges-add "obfs4 1.2.3.4:443 FINGERPRINT cert=... iat-mode=0"
+darkcat tor bridges-clear
+```
+
+If your tor uses cookie auth in a non-standard location, pass
+`--tor-control-cookie /path/to/cookie`. For password auth, pass
+`--tor-control-password 'secret'`. Bridge / pluggable-transport
+*configuration* still lives in torrc (`UseBridges 1` and
+`ClientTransportPlugin obfs4 …`); these commands flip the bridge *list*
+at runtime without restarting tor.
+
+### Abuse blocklist
+
+Hard-skip URLs / hosts / hashes you never want to crawl (CSAM, dox
+archives, private personal data). Rules live in a plain text file:
+
+```
+# host (exact)
+host:bad.example.onion
+# host suffix
+.abuse.onion
+# URL substring
+urlcontains:/dox/
+# SHA-256 of decoded page text
+hash:b966dff91b92b293…
+```
+
+Use it on a crawl, then audit afterwards:
+
+```sh
+darkcat crawl --blocklist /etc/darkcat/blocklist.txt …
+darkcat blocklist test --file /etc/darkcat/blocklist.txt http://x.onion/...
+darkcat blocklist log -n 50
+```
+
+URLs matched by host/url rules are skipped before fetching; hash rules
+are checked after fetching but before storing, so the page body never
+hits the SQLite DB. Every block is recorded in `blocklist_audit` with
+the rule that triggered it.
+
+### Active probes for system-routed protocols
+
+`darkcat status` now runs cheap, root-free probes for protocols that
+were previously assumed reachable:
+
+- **Yggdrasil** — local interface holds an address in `200::/7`.
+- **cjdns** — local interface holds an address in `fc00::/8`.
+- **Lokinet** — there is a `lokitun*` (or `lokinet*`) interface in
+  `/sys/class/net/`.
+
+On non-Linux systems where `/proc/net/if_inet6` and `/sys/class/net`
+aren't available, the probes return True (preserving the prior behavior
+of trusting the user).
+
+## Protocol-specific commands
+
+### Telegram channels (`telegram`)
+
+`t.me/s/<channel>` serves rendered HTML of recent messages — no API key,
+no `tdlib`. Each message has a permalink, ISO datetime, body text, and
+inline links. With `--ingest`, every message becomes a synthetic page
+(protocol=`telegram`) so the leak scanner sees it like any other crawl
+target.
+
+```sh
+darkcat telegram example_channel --limit 50 --pages 3
+darkcat telegram leak_channel --ingest        # then `darkcat scan`
+```
+
+### PGP key harvest (`keys`)
+
+Many vendor pages publish a PGP block. `keys harvest` scans the crawled
+pages table, extracts every `BEGIN PGP PUBLIC KEY BLOCK`, and (if `gpg`
+is on PATH) resolves fingerprint + user IDs.
+
+```sh
+darkcat keys harvest                    # scan all crawled pages
+darkcat keys list                       # browse harvested keys
+darkcat keys list --fpr DEADBEEF        # substring on fingerprint
+darkcat keys show <fingerprint>         # print the full armored block
+```
+
+### I2P jump-service auto-resolve
+
+When an I2P fetch fails because the host isn't in the local addressbook,
+`I2PTransport` retries via `notbob.i2p` → `stats.i2p` jump pages,
+extracts the resulting `*.b32.i2p` address, and re-fetches. Configurable
+via `cfg.i2p_jump_services`.
+
+### Local Hyper / hypercore gateway
+
+`HyperTransport` now prefers a local `127.0.0.1:4501` gateway (Beaker /
+hypercored) when it's listening, falling back to the public `hyper.fyi`
+gateway otherwise. Override via `cfg.hyper_local_gateway`.
+
+### ZeroNet content.json walk (`zeronet-walk`)
+
+ZeroNet sites publish a JSON manifest at `<site>/content.json`. This
+walks the file graph (recursing into `includes`) and fetches every file
+through the local ZeroNet UI. With `--ingest`, every file is stored as a
+page so `scan` / `findings` see it.
+
+```sh
+darkcat zeronet-walk 1HelloAddress… --limit 200
+darkcat zeronet-walk 1HelloAddress… --ingest
+```
+
+### Tor circuits + descriptor query
+
+```sh
+darkcat tor circuits                # list current circuits via control port
+darkcat tor descriptor <onion>      # dump a v3 onion's descriptor (from cache)
+```
+
+Useful for verifying stream isolation (different hosts → different
+circuit IDs) and for inspecting what tor knows about a particular hidden
+service. Both go through the existing `--tor-control-port` /
+`--tor-control-cookie` / `--tor-control-password` plumbing.
 
 ## How crawling works
 
@@ -183,9 +575,12 @@ Key bindings: `q` quit · `Ctrl+R` refresh status · `Ctrl+C` stop crawl ·
 ## Layout
 
 ```
-darkcat/
+darkcat              shell launcher (no install required)
+src/darkcat/
   cli.py            argparse entry point with rich --help
   tui.py            Textual UI (status bar, crawl form, log, results table)
+  repl.py           interactive `cmd.Cmd` shell wrapping the CLI commands
+  gui.py            Tkinter desktop GUI (mirrors the TUI in a window)
   config.py         defaults, ports, paths, gateway hosts
   protocols.py      URL → Protocol classifier (18 protocols)
   transports.py     per-protocol fetchers
@@ -193,9 +588,41 @@ darkcat/
   extractor.py      HTML / Gemini / Gopher → title/text/links
   topic_filter.py   keyword + phrase scoring
   crawler.py        BFS crawler with stop-event and event callbacks
-  storage.py        SQLite + FTS5 (pages, links, full-text)
+  scanner.py        regex/Luhn-based credential / leak detector
+  watch.py          watchlist matching + sink dispatch (log/notify/file/webhook)
+  export.py         findings → JSONL / STIX 2.1 / MISP serializers
+  server.py         HIBP-style hash-prefix HTTP server
+  discovery.py      submit topic queries to onion search engines, harvest seeds
+  feeds.py          sitemap / RSS / Atom / JSON-Feed probing
+  encoded.py        rescue URLs from JS strings / base64 / ROT13
+  ocr.py            Tesseract integration for image-encoded pages
+  torctl.py         minimal Tor control-port client (NEWNYM, bridges, info)
+  probe.py          active reachability probes for Yggdrasil / cjdns / Lokinet
+  blocklist.py      abuse blocklist (host / suffix / urlcontains / hash rules)
+  telegram.py       t.me/s/<channel> scraper (no auth)
+  pgp.py            PGP public-key block extractor (gpg --show-keys helper)
+  zeronet.py        content.json walker for ZeroNet sites
+  storage.py        SQLite + FTS5 (pages, links, full-text, findings,
+                                    page_history, watchlist, alerts)
   seeds.py          default seed lists per protocol
 ```
+
+## Documentation
+
+The `docs/` directory carries the long-form material:
+
+- **`docs/QUICKSTART.md`** — start-from-zero tutorial: install, first
+  crawl, first persona, first chat login.
+- **`docs/USERGUIDE.md`** — surface vs deep vs dark vs darknet, plus a
+  per-network field manual and opsec hygiene notes.
+- **`docs/NETWORKS.md`** — purpose / strengths / weaknesses for every
+  overlay, distributed-web, small-web, and messaging network darkcat
+  speaks (or recognizes).
+- **`docs/INTERNALS.md`** — architecture, fetch path, scan path,
+  watchlist firing model, schema, threat model, extension points.
+- **`docs/CONFIG.md`** — every `Config` field, env var, and CLI flag.
+
+Run `darkcat init` once for a guided first-run bootstrap.
 
 ## Limitations
 

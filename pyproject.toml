@@ -36,12 +36,60 @@ dependencies = [
     "PySocks>=1.7.1",
     "beautifulsoup4>=4.12",
     "lxml>=4.9",
+    "rich>=13.0",
     "textual>=0.60",
 ]
+
+[project.optional-dependencies]
+# Tab-completion in bash / zsh / fish via `register-python-argcomplete darkcat`.
+# Soft-imported by darkcat.cli — install only if you want shell completion.
+completion = ["argcomplete>=3.0"]
+# Headless JS rendering for `darkcat fetch --render` / `crawl --render`.
+# After install, run `playwright install chromium` once.
+render = ["playwright>=1.40"]
+# EIP-55 strict-mode for the Ethereum address scanner. Without it, mixed-case
+# ETH addresses fall back to lower confidence (still detected, just unverified).
+crypto = ["pycryptodome>=3.19"]
+# `darkcat chat` backends. Each is independently installable so users can
+# pull in only the messengers they actually use:
+#   chat-telegram   real Telegram user-account login (MTProto)
+#   chat-matrix     federated Matrix client; add 'matrix-nio[e2e]' for E2EE
+#   chat-xmpp       slixmpp client
+#   chat-simplex    websocket client to drive simplex-chat daemon
+# Session, Tox, Briar, Ricochet have no Python deps — install their
+# upstream binary (session-cli, qTox, briar-headless, Ricochet Refresh).
+chat-telegram = ["telethon>=1.34"]
+chat-matrix = ["matrix-nio>=0.24"]
+chat-xmpp = ["slixmpp>=1.8"]
+chat-simplex = ["websocket-client>=1.7"]
+chat = [
+    "telethon>=1.34",
+    "matrix-nio>=0.24",
+    "slixmpp>=1.8",
+    "websocket-client>=1.7",
+]
+all = [
+    "argcomplete>=3.0",
+    "playwright>=1.40",
+    "pycryptodome>=3.19",
+    "telethon>=1.34",
+    "matrix-nio>=0.24",
+    "slixmpp>=1.8",
+    "websocket-client>=1.7",
+]
+
+[project.urls]
+Homepage      = "https://github.com/borjatarraso/darkcat"
+Source        = "https://github.com/borjatarraso/darkcat"
+Repository    = "https://github.com/borjatarraso/darkcat.git"
+"Bug Tracker" = "https://github.com/borjatarraso/darkcat/issues"
 
 [project.scripts]
 darkcat = "darkcat.cli:main"
 
 [tool.setuptools.packages.find]
-where = ["."]
+where = ["src"]
 include = ["darkcat*"]
+
+[tool.setuptools.package-data]
+darkcat = ["assets/*.png", "assets/logos/*.png"]

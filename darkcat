@@ -1,0 +1,22 @@
+#!/bin/sh
+# Darkcat launcher — runs the CLI without requiring `pip install`.
+# Picks up a local virtualenv if present, otherwise falls back to system python3.
+
+set -e
+
+here=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
+
+if [ -x "$here/.venv/bin/python" ]; then
+    py="$here/.venv/bin/python"
+elif [ -x "$here/venv/bin/python" ]; then
+    py="$here/venv/bin/python"
+else
+    py=$(command -v python3 || command -v python || true)
+    if [ -z "$py" ]; then
+        echo "darkcat: no python3 interpreter found on PATH" >&2
+        exit 127
+    fi
+fi
+
+export PYTHONPATH="$here/src${PYTHONPATH:+:$PYTHONPATH}"
+exec "$py" -m darkcat "$@"
