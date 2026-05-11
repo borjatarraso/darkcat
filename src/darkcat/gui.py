@@ -3252,6 +3252,33 @@ class DarkcatGUI:
         )
         _row("To (csv)", to_w)
 
+        cc_var = tk.StringVar(value="")
+        cc_w = tk.Entry(
+            form, textvariable=cc_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("CC (csv)", cc_w)
+
+        bcc_var = tk.StringVar(value="")
+        bcc_w = tk.Entry(
+            form, textvariable=bcc_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("BCC (csv)", bcc_w)
+
+        reply_var = tk.StringVar(value="")
+        reply_w = tk.Entry(
+            form, textvariable=reply_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("Reply-To", reply_w)
+
         subj_var = tk.StringVar(value="")
         subj_w = tk.Entry(
             form, textvariable=subj_var,
@@ -3302,9 +3329,14 @@ class DarkcatGUI:
                 if not recipients or not subj or not body_str:
                     _log("error: need to, subject, body")
                     return
+                cc_raw = cc_var.get().strip()
+                bcc_raw = bcc_var.get().strip()
+                reply_to = reply_var.get().strip() or None
+                cc = [s.strip() for s in cc_raw.split(",") if s.strip()] or None
+                bcc = [s.strip() for s in bcc_raw.split(",") if s.strip()] or None
                 ns = _argparse.Namespace(
                     cmd="mail", action="send", persona=persona,
-                    to=recipients, cc=None, bcc=None, reply_to=None,
+                    to=recipients, cc=cc, bcc=bcc, reply_to=reply_to,
                     subject=subj, body=body_str, body_file=None,
                     timeout=30.0,
                 )

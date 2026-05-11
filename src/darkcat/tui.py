@@ -1789,6 +1789,12 @@ class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
             )
             yield Label("To (comma-separated)")
             yield Input(placeholder="alice@example.com, bob@example.com", id="to")
+            yield Label("CC (comma-separated, send only)")
+            yield Input(placeholder="optional", id="cc")
+            yield Label("BCC (comma-separated, send only)")
+            yield Input(placeholder="optional", id="bcc")
+            yield Label("Reply-To (send only)")
+            yield Input(placeholder="optional", id="reply-to")
             yield Label("Subject (send) / folder (check)")
             yield Input(placeholder="hello / INBOX", id="subject")
             yield Label("Body (send) / limit (check, default 25)")
@@ -1864,9 +1870,14 @@ class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
             if not recipients or not subj or not body:
                 log.write("[red]error:[/] need to, subject, body")
                 return
+            cc_raw = self.query_one("#cc", Input).value.strip()
+            bcc_raw = self.query_one("#bcc", Input).value.strip()
+            reply_to = self.query_one("#reply-to", Input).value.strip() or None
+            cc = [s.strip() for s in cc_raw.split(",") if s.strip()] or None
+            bcc = [s.strip() for s in bcc_raw.split(",") if s.strip()] or None
             ns = _argparse.Namespace(
                 cmd="mail", action="send", persona=persona,
-                to=recipients, cc=None, bcc=None, reply_to=None,
+                to=recipients, cc=cc, bcc=bcc, reply_to=reply_to,
                 subject=subj, body=body, body_file=None, timeout=30.0,
             )
         else:

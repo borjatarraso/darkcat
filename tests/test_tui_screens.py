@@ -490,3 +490,78 @@ def test_vault_unlock_mixin_no_passphrase_leaves_env_clean(monkeypatch):
             assert captured["env"] == "outer-baseline"
 
     _run(go())
+
+
+def test_mail_screen_send_threads_cc_bcc_reply_to_into_namespace(tmp_path, monkeypatch):
+    """The mail-send form must wire the new CC / BCC / Reply-To fields
+    into the Namespace handed to the CLI. Empty fields collapse to
+    ``None`` so argparse defaults match the CLI's behaviour."""
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+
+    from darkcat import personas as pv
+    from darkcat.config import Config
+
+    # Seed a plain vault with one persona so the persona Select is
+    # populated and selectable in the headless test.
+    inner = pv.Vault(path=tmp_path / "personas.json")
+    inner.add(pv.Persona(
+        name="mailer-acct", provider="protonmail", category="email",
+        status=pv.STATUS_CONFIRMED, site="protonmail",
+    ))
+    inner.save()
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MailScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            await pilot.pause()
+
+            from textual.widgets import Input, Select
+            screen.query_one("#persona", Select).value = "mailer-acct"
+            screen.query_one("#to", Input).value = "a@example.com"
+            screen.query_one("#cc", Input).value = "c1@x.com, c2@x.com"
+            screen.query_one("#bcc", Input).value = "bcc@x.com"
+            screen.query_one("#reply-to", Input).value = "boss@x.com"
+            screen.query_one("#subject", Input).value = "hello"
+            screen.query_one("#body", Input).value = "world"
+
+            captured: dict = {}
+
+            def _fake_invoke(cfg, ns):
+                captured["ns"] = ns
+                return (0, "", "")
+
+            import darkcat.identity as _id
+            original = _id.invoke_cli_capturing
+            _id.invoke_cli_capturing = _fake_invoke
+            try:
+                screen.action_run()
+                await pilot.pause()
+            finally:
+                _id.invoke_cli_capturing = original
+
+            ns = captured["ns"]
+            assert ns.to == ["a@example.com"]
+            assert ns.cc == ["c1@x.com", "c2@x.com"]
+            assert ns.bcc == ["bcc@x.com"]
+            assert ns.reply_to == "boss@x.com"
+
+            # Empty fields must collapse to None, not [""] or "".
+            screen.query_one("#cc", Input).value = ""
+            screen.query_one("#bcc", Input).value = "   ,  "
+            screen.query_one("#reply-to", Input).value = ""
+            captured.clear()
+            _id.invoke_cli_capturing = _fake_invoke
+            try:
+                screen.action_run()
+                await pilot.pause()
+            finally:
+                _id.invoke_cli_capturing = original
+
+            ns2 = captured["ns"]
+            assert ns2.cc is None
+            assert ns2.bcc is None
+            assert ns2.reply_to is None
+
+    _run(go())
