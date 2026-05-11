@@ -33,6 +33,8 @@ from textual.widgets import Static
 
 from darkcat.tui import (
     ConfirmRevealScreen,
+    IdentityEditScreen,
+    IdentityScreen,
     LinkScreen,
     PassphraseScreen,
     PersonaAddScreen,
@@ -203,6 +205,89 @@ def test_link_screen_submit_returns_parent_child_pair():
             payload = captured[0]
             assert payload["parent"] == "proton-acct"
             assert payload["child"] == "reddit-acct"
+
+    _run(go())
+
+
+def test_action_launch_chains_result_then_edit_screen(tmp_path, monkeypatch):
+    """End-to-end: ``IdentityScreen.action_launch`` must push a
+    ``ResultScreen`` first, then an ``IdentityEditScreen`` for the same
+    persona. This is the chained flow that lets the operator capture
+    recovery codes the provider showed once during signup; if the order
+    inverts or the second push is dropped, the codes are lost. Heavy
+    end-to-end test — sets up a real vault on disk so the screen's
+    ``_open_inner_or_notify`` finds the persona by name."""
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+
+    from darkcat import personas as pv
+    inner = pv.Vault(path=tmp_path / "personas.json")
+    inner.add(pv.Persona(
+        name="protonmail-acct",
+        provider="protonmail",
+        category="email",
+        status=pv.STATUS_PENDING,
+        handle="quiet_owl_1234",
+        password="placeholder-not-used-by-launch",
+    ))
+    inner.save()
+
+    from darkcat.config import Config
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = IdentityScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            # Two pauses: one for the IdentityScreen to mount, one for
+            # ``on_mount`` → ``_unlock_then`` → ``_refresh`` to populate
+            # the DataTable from the freshly-written vault.
+            await pilot.pause()
+            await pilot.pause()
+
+            # Stub the CLI dispatcher so we don't spawn xdg-open / a
+            # browser during the test. Returning rc=0 puts us on the
+            # success path that pushes ResultScreen + chains the edit.
+            screen._run = lambda ns: (0, "launched ok", "")
+
+            # Spy on app.push_screen to record the chain order.
+            pushes: list = []
+            original_push = app.push_screen
+
+            def _spy(child, *args, **kwargs):
+                pushes.append(child)
+                return original_push(child, *args, **kwargs)
+
+            app.push_screen = _spy  # type: ignore[method-assign]
+
+            # Drive the action directly. We don't synthesize an "l"
+            # keypress because the DataTable's row-selection state and
+            # focus path are not what's under test here — the chained
+            # screen push is.
+            screen.action_launch()
+            # ResultScreen is pushed inline; IdentityEditScreen is
+            # scheduled via ``call_later`` → ``_unlock_then`` → ``_go``.
+            # Two pauses give the scheduler time to drain both.
+            await pilot.pause()
+            await pilot.pause()
+
+            kinds = [type(s).__name__ for s in pushes]
+            assert "ResultScreen" in kinds, (
+                f"ResultScreen not pushed; saw {kinds}"
+            )
+            assert "IdentityEditScreen" in kinds, (
+                f"IdentityEditScreen not pushed; saw {kinds}"
+            )
+            assert kinds.index("ResultScreen") < kinds.index(
+                "IdentityEditScreen"
+            ), f"order inverted; saw {kinds}"
+
+            # The edit screen must reference the same persona name the
+            # launch was for — otherwise the captured codes land on the
+            # wrong row.
+            edit_screen = next(
+                s for s in pushes if isinstance(s, IdentityEditScreen)
+            )
+            assert edit_screen.persona.name == "protonmail-acct"
 
     _run(go())
 
