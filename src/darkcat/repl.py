@@ -13,6 +13,7 @@ from darkcat.cli import (
     _build_about_text,
     cmd_alerts,
     cmd_blocklist,
+    cmd_chat,
     cmd_clusters,
     cmd_crawl,
     cmd_decode_links,
@@ -27,6 +28,7 @@ from darkcat.cli import (
     cmd_history,
     cmd_keys,
     cmd_list,
+    cmd_mail,
     cmd_mirrors,
     cmd_ocr,
     cmd_probe,
@@ -102,6 +104,8 @@ _REPL_COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
     ]),
     ("Identity & comms", [
         ("telegram", "Scrape t.me/s/<channel> messages."),
+        ("chat",     "Two-way chat: login / list / read / send / join / leave / connect / addcontact."),
+        ("mail",     "Send + check email through a persona (SMTP / IMAP)."),
         ("keys",     "Harvest / list / show PGP public keys from crawled pages."),
     ]),
     ("Shell", [
@@ -127,6 +131,12 @@ _SUBACTIONS: dict[str, tuple[str, ...]] = {
     "keys":      ("harvest", "list", "show"),
     "schedule":  ("add", "list", "remove", "enable", "disable",
                   "run", "run-due", "loop"),
+    "identity":  ("new", "list", "show", "confirm", "edit",
+                  "rotate-password", "burn", "link", "unlink",
+                  "export", "providers", "launch"),
+    "chat":      ("backends", "login", "list", "read", "send", "ingest",
+                  "join", "leave", "connect", "addcontact"),
+    "mail":      ("send", "check"),
 }
 
 
@@ -334,6 +344,15 @@ class DarkcatShell(cmd.Cmd):
 
     def complete_schedule(self, text, line, begidx, endidx):
         return self._complete_subaction("schedule", text, line)
+
+    def complete_identity(self, text, line, begidx, endidx):
+        return self._complete_subaction("identity", text, line)
+
+    def complete_chat(self, text, line, begidx, endidx):
+        return self._complete_subaction("chat", text, line)
+
+    def complete_mail(self, text, line, begidx, endidx):
+        return self._complete_subaction("mail", text, line)
 
     @staticmethod
     def _split(line: str) -> Optional[list[str]]:
@@ -1060,6 +1079,89 @@ class DarkcatShell(cmd.Cmd):
                 return
             ns.onion = toks[1]
         cmd_tor(self.cfg, ns)
+
+    def do_identity(self, arg: str) -> None:
+        """identity ACTION [args]   Manage compartmentalised per-project identities.
+
+        ACTION = providers | new | list | show | confirm | rotate-password |
+                 burn | link | unlink | export | launch
+        Shortcuts:
+          identity providers
+          identity new --provider protonmail --transport tor --purpose research-X
+          identity list --provider protonmail
+          identity show <name> --reveal
+        Falls through to the same argparse parser as the CLI, so every
+        flag of `darkcat identity ...` works here too."""
+        toks = self._split(arg)
+        if toks is None or not toks:
+            print(self.do_identity.__doc__)
+            return
+        from darkcat import cli as _cli
+        parser = _cli._build_parser()
+        try:
+            ns = parser.parse_args(["identity", *toks])
+        except SystemExit:
+            # argparse called sys.exit on bad input — already printed an
+            # error to stderr; just return control to the prompt.
+            return
+        try:
+            _cli.cmd_identity(self.cfg, ns)
+        except Exception as e:
+            _err_console.print(f"[fail]identity: {e}[/]")
+
+    def do_chat(self, arg: str) -> None:
+        """chat ACTION [args]   Two-way chat over messaging networks.
+
+        ACTION = backends | login | list | read | send | ingest |
+                 join | leave | connect | addcontact
+        Shortcuts:
+          chat backends
+          chat login telegram --persona alice-tg
+          chat list  --persona alice-tg
+          chat read  --persona alice-tg CHANNEL_ID -n 30
+          chat send  --persona alice-tg CHANNEL_ID -m 'hello'
+          chat join  --persona alice-tg @somechannel
+        Falls through to the same argparse parser as the CLI, so every
+        flag of `darkcat chat ...` works here too."""
+        toks = self._split(arg)
+        if toks is None or not toks:
+            print(self.do_chat.__doc__)
+            return
+        from darkcat import cli as _cli
+        parser = _cli._build_parser()
+        try:
+            ns = parser.parse_args(["chat", *toks])
+        except SystemExit:
+            return
+        try:
+            _cli.cmd_chat(self.cfg, ns)
+        except Exception as e:
+            _err_console.print(f"[fail]chat: {e}[/]")
+
+    def do_mail(self, arg: str) -> None:
+        """mail ACTION [args]   Send + check email through a persona.
+
+        ACTION = send | check
+        Shortcuts:
+          mail send  --persona me-proton --to alice@example.com \\
+                     --subject hi --body 'first message'
+          mail check --persona me-proton -n 10
+        Falls through to the same argparse parser as the CLI, so every
+        flag of `darkcat mail ...` works here too."""
+        toks = self._split(arg)
+        if toks is None or not toks:
+            print(self.do_mail.__doc__)
+            return
+        from darkcat import cli as _cli
+        parser = _cli._build_parser()
+        try:
+            ns = parser.parse_args(["mail", *toks])
+        except SystemExit:
+            return
+        try:
+            _cli.cmd_mail(self.cfg, ns)
+        except Exception as e:
+            _err_console.print(f"[fail]mail: {e}[/]")
 
     def do_blocklist(self, arg: str) -> None:
         """blocklist ACTION [args]   test --file FILE URL... | log [-n N]"""

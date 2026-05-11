@@ -1,0 +1,1235 @@
+================================================================================
+                          DARKCAT — FIELD INSTRUCTIONS
+                Concrete examples for every supported network
+                              and every major feature
+================================================================================
+
+This file is a tour of darkcat by example. Every command shown here is real and
+runnable; every URL is from darkcat's built-in seeds (see `darkcat list all`).
+Output snippets are abridged and trimmed for readability.
+
+Conventions:
+  $   denotes a shell prompt
+  ▸   denotes the darkcat REPL prompt
+  …   abridges long output
+  Lines starting with `#` are comments inside an example.
+
+================================================================================
+TABLE OF CONTENTS
+================================================================================
+
+  1.  Install and first-run health check
+  2.  Discover what darkcat can reach (status, doctor, list, seeds)
+  3.  Tor — finding hacking, crypto, and forum content
+  4.  I2P — eepsites and reseed
+  5.  IPFS / IPNS — content-addressed web
+  6.  Freenet / Hyphanet — long-form anonymous publishing
+  7.  ZeroNet — peer-to-peer mirrors
+  8.  Gemini and Gopher — the small web
+  9.  ENS, Handshake, OpenNIC, Namecoin — alt-roots
+ 10.  Search and analyse what you have crawled
+ 11.  Watchlist and alerts
+ 12.  Diff: change-watching one URL over time
+ 13.  PGP key harvest
+ 14.  Mirror clustering (find clones / phishes)
+ 15.  Image OCR
+ 16.  Tor circuits (newnym, info, bridges)
+ 17.  Liveness probing and loop monitoring
+ 18.  Scheduled re-crawls
+ 19.  Export and IOC formats (JSONL, STIX 2.1, MISP)
+ 20.  Chat networks (Telegram, Matrix, XMPP, …)
+ 21.  Identity Generator — full tour (ProtonMail, Mastodon, others)
+ 22.  Cheat sheet — everything in one screen
+ 23.  GUI walkthrough — click by click
+
+
+================================================================================
+1.  INSTALL AND FIRST-RUN HEALTH CHECK
+================================================================================
+
+    $ python -m venv .venv && . .venv/bin/activate
+    $ pip install -e .
+
+    # Bootstrap config / dirs / seed lists.
+    $ darkcat init
+
+    # Any time after install, sanity-check the environment.
+    $ darkcat doctor
+
+    Expected output (abridged):
+
+        ● darkcat doctor — environment health
+          [ok]   home directory     /home/you/.darkcat
+          [ok]   sqlite database    ~/.darkcat/crawl.db (rwx)
+          [ok]   tor SOCKS          127.0.0.1:9050 reachable
+          [warn] i2p HTTP proxy     127.0.0.1:4444 NOT reachable
+          [ok]   ipfs gateway       127.0.0.1:8080 reachable
+          [warn] yggdrasil          no 200::/7 route
+          [ok]   gnupg              gpg 2.4.4
+          [ok]   beautifulsoup4 / lxml / rich / textual
+          [ok]   chat backends      6/9 ready (missing: tox briar ricochet)
+          [ok]   proton bridge      127.0.0.1:1025 listening (or [warn] refused)
+          [ok]   mail hosts         smtp disroot.org:587 reachable
+          [ok]   mail hosts         imap disroot.org:993 reachable
+
+If a daemon is missing darkcat keeps working — it just won't crawl that
+protocol. Install only what you actually need.
+
+The three summary lines at the bottom are deliberately small. The chat-
+backends row aggregates `darkcat chat backends` into one entry so the
+doctor table doesn't bloat by one row per backend. The proton-bridge row
+is a 400ms TCP probe of 127.0.0.1:1025 — [ok] only when a local Proton
+Mail Bridge is actually listening (used by `mail send / check` against
+ProtonMail personas). The mail-hosts rows walk every persona in the
+vault, collect each SMTP coordinate (``site``) + IMAP coordinate
+(parsed from ``notes``), and run a 2 s ``socket.create_connection``
+against each — surfaces dead presets before `mail send` blows up with
+an opaque socket error. Encrypted vaults are skipped here (decrypt
+first with ``darkcat personas decrypt`` if you want this check).
+
+
+================================================================================
+2.  DISCOVER WHAT DARKCAT CAN REACH
+================================================================================
+
+    # Quick, machine-friendly status.
+    $ darkcat status
+
+        protocol   reachable   notes
+        tor        yes         127.0.0.1:9050
+        i2p        no          start i2pd or i2p
+        ipfs       yes         kubo gateway
+        freenet    no          start FProxy on 8888
+        gemini     yes         direct (TLS+TOFU)
+        gopher     yes         direct
+        clearnet   yes         (tunnelled through tor)
+
+    # Print every curated entry point we ship — handy as a starter map.
+    $ darkcat list all | head -40
+    $ darkcat list tor          # only tor entries
+    $ darkcat -la               # short alias for list-all
+
+    # Print the raw seed URLs (no name / desc columns).
+    $ darkcat seeds tor
+    $ darkcat seeds i2p
+    $ darkcat seeds all > /tmp/seeds.txt
+
+
+================================================================================
+3.  TOR — FINDING HACKING, CRYPTO AND FORUM CONTENT
+================================================================================
+
+Goal: find darknet forums on hacking and cryptocurrency, crawl what looks
+relevant, then search across the result.
+
+    # Step 1 — discover seed URLs by topic. `discover` queries Ahmia,
+    # tor.taxi, dark.fail, onion.live and similar directories through tor
+    # and aggregates onion URLs that match. The query is positional.
+    $ darkcat discover "hacking forum"
+    $ darkcat discover "cryptocurrency mixer"
+    $ darkcat discover "carding forum" --max-per-engine 30
+
+    # Result lines look like:
+    #   [tor.taxi]   http://abc...xyz.onion/   "DarkForum — eng/rus hacking"
+    #   [ahmia]      http://def...uvw.onion/   "Crypto mixer review board"
+    #
+    # Save the URLs to a file for the next step (one URL per line, ready
+    # to feed straight into --seed-file).
+    $ darkcat discover "hacking forum" --max-per-engine 50 \
+        > /tmp/hacking_seeds.txt
+
+    # Step 2 — crawl those seeds, BFS depth-2, with topic scoring so pages
+    # mentioning your keywords score higher.
+    $ darkcat crawl --seed-file /tmp/hacking_seeds.txt \
+                    --max-depth 2 --max-pages 400 \
+                    --topics exploit cve 0day payload phishing rat leak
+
+    # Step 3 — search what you crawled, FTS5.
+    $ darkcat search "0day AND windows"
+    $ darkcat search "monero mixer"
+    $ darkcat search "wallet drainer NEAR phishing"        # FTS5 NEAR
+    $ darkcat search "carding" --strict                    # AND of phrases
+
+    # Step 4 — show the highest-scoring pages from the crawl.
+    $ darkcat top --limit 25
+    $ darkcat top --protocol tor --limit 50
+
+A few well-documented public seeds to test the pipeline (these are stable
+clearnet directories that themselves index onions):
+
+    https://tor.taxi/                tor onion directory
+    https://dark.fail/               curated onion uptime monitor
+    https://ahmia.fi/                clearnet onion search engine
+    https://thehiddenwiki.com/       legacy onion index
+    http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/
+                                     DuckDuckGo's own onion service
+
+    # Crawl just the big four directories to seed your local index.
+    $ darkcat crawl --seeds https://tor.taxi/ https://dark.fail/ \
+                            https://ahmia.fi/ \
+                    --max-depth 1 --max-pages 200
+
+
+================================================================================
+4.  I2P — EEPSITES AND RESEED
+================================================================================
+
+I2P needs a local I2P router. On Fedora:
+
+    $ sudo dnf install i2pd
+    $ sudo systemctl enable --now i2pd
+    $ darkcat status | grep i2p          # should now say 'yes'
+
+    # I2P seeds shipped with darkcat:
+    #   notbob.i2p     uptime + index
+    #   identiguy.i2p  eepsite directory
+    #   reg.i2p        domain registry
+    #   stats.i2p      router statistics
+    #   legwork.i2p    eepsite search
+
+    # Crawl the directory pages to populate your local index.
+    $ darkcat crawl --seeds http://notbob.i2p/ http://identiguy.i2p/ \
+                    --max-depth 2 --max-pages 300 \
+                    --topics i2p eepsite onion privacy
+
+    # Single-shot fetch (one URL, transport auto-picked from suffix):
+    $ darkcat fetch http://notbob.i2p/
+
+    # I2P jump-service auto-resolve: when a fresh .i2p hostname doesn't
+    # have a local subscription yet, darkcat falls back to a jump service
+    # (stats.i2p) so the fetch still resolves on first hit.
+    $ darkcat fetch http://example-new.i2p/
+
+    # Search across what you crawled (FTS5 across all protocols):
+    $ darkcat search "anonymity"
+    $ darkcat search "anonymity" --strict        # AND of phrases
+
+
+================================================================================
+5.  IPFS / IPNS — CONTENT-ADDRESSED WEB
+================================================================================
+
+Needs a local Kubo node (ipfs daemon). The default gateway is
+127.0.0.1:8080. If you don't run one, darkcat falls back to a public
+gateway (configurable in `~/.darkcat/config.toml`).
+
+    # Real IPNS names you can crawl right now:
+    $ darkcat fetch ipns://docs.ipfs.tech
+    $ darkcat fetch ipns://en.wikipedia-on-ipfs.org
+    $ darkcat fetch ipns://blog.ipfs.tech
+
+    # Direct CID:
+    $ darkcat fetch ipfs://bafybeibwzifw52ttrkqlikfzext5akxu7lz4xiwjgwzmqcpdzmp3n5vnbe
+
+    # Walk a small bundle: BFS depth-2 from the IPFS docs root.
+    $ darkcat crawl --seeds ipns://docs.ipfs.tech \
+                    --max-depth 2 --max-pages 150
+
+    # Read-only mirror of Wikipedia on IPFS — perfect for offline research:
+    $ darkcat crawl --seeds ipns://en.wikipedia-on-ipfs.org \
+                    --max-depth 1 --max-pages 50 \
+                    --topics encryption privacy opsec
+
+    # Search the result.
+    $ darkcat search "end-to-end encryption"
+
+
+================================================================================
+6.  FREENET / HYPHANET — LONG-FORM ANONYMOUS PUBLISHING
+================================================================================
+
+Needs FProxy on 127.0.0.1:8888 (the Hyphanet node web UI port).
+
+    # Two real Hyphanet indices (USK = Updateable Subspace Key):
+    $ darkcat fetch \
+        "freenet:USK@XJZAi25dd5y7lrxE3cHMmM-xZ-c-hlPpKLYeLC0YG5I,8XTbR1bd9RBXlX6j-OZNednsJ8Cl6EAeBBebC3jtMFU,AQACAAE/index/-1/"
+    # That's "Enzo's Index" — a manually curated freesite directory.
+
+    $ darkcat fetch \
+        "freenet:USK@7H7sH5lEeFD80sigMb35GaCD03N5OCUKgi9D0iuxn7E,3SBfWf-DvMCwFmIfVx3lxYDEJpRobrcYZ4DbtUq3MbA,AQACAAE/linkageddon/-1/"
+    # "Linkageddon" — auto-generated freesite firehose.
+
+    # Crawl the indices to bootstrap a pile of freesites.
+    $ darkcat crawl --seeds \
+        "freenet:USK@XJZAi25dd5y7lrxE3cHMmM-xZ-c-hlPpKLYeLC0YG5I,8XTbR1bd9RBXlX6j-OZNednsJ8Cl6EAeBBebC3jtMFU,AQACAAE/index/-1/" \
+                    --max-depth 1 --max-pages 60
+
+Freenet keys come in CHK (immutable hash), SSK (signed mutable),
+USK (versioned signed), KSK (legacy keyword) flavours; darkcat treats
+all four uniformly.
+
+
+================================================================================
+7.  ZERONET — PEER-TO-PEER MIRRORS
+================================================================================
+
+Needs a ZeroNet UI on 127.0.0.1:43110.
+
+    # The canonical "ZeroHello" entry page:
+    $ darkcat fetch zero://1HelloAddr8MZUPYMtj9CSJj3wfGRjEHr
+
+    # Walk content.json for one site to discover its files.
+    $ darkcat zeronet-walk 1HelloAddr8MZUPYMtj9CSJj3wfGRjEHr
+
+
+================================================================================
+8.  GEMINI AND GOPHER — THE SMALL WEB
+================================================================================
+
+No daemon needed. Gemini speaks TLS+TOFU directly; Gopher speaks raw TCP.
+
+    # Real Gemini capsules:
+    $ darkcat fetch gemini://geminiprotocol.net/
+    $ darkcat fetch gemini://geminispace.info/         # search engine
+    $ darkcat fetch gemini://kennedy.gemi.dev/         # crawler / search
+
+    # Crawl Geminispace from a single seed.
+    $ darkcat crawl --seeds gemini://geminispace.info/ \
+                    --max-depth 2 --max-pages 200 \
+                    --topics phlog smolnet privacy
+
+    # Real Gopher holes:
+    $ darkcat fetch gopher://gopher.floodgap.com/
+    $ darkcat fetch gopher://sdf.org/
+    $ darkcat fetch gopher://gopher.club/
+
+    # Crawl a multi-host pool.
+    $ darkcat crawl --seeds gopher://gopher.floodgap.com/ \
+                            gopher://sdf.org/ gopher://gopher.club/ \
+                    --max-depth 2 --max-pages 100
+
+
+================================================================================
+9.  ENS, HANDSHAKE, OPENNIC, NAMECOIN — ALT-ROOTS
+================================================================================
+
+    # ENS .eth via eth.limo gateway (no local resolver needed):
+    $ darkcat fetch https://vitalik.eth/
+    $ darkcat fetch https://nick.eth/
+
+    # Handshake (HNS) — needs hsd/hnsd locally, else hns.is gateway:
+    $ darkcat fetch http://welcome.nb/
+    $ darkcat fetch http://proofofconcept/
+
+    # OpenNIC peering TLDs — needs an OpenNIC DNS server in /etc/resolv.conf
+    # or via systemd-resolved drop-in:
+    $ darkcat fetch http://opennic.geek/
+    $ darkcat fetch http://wiki.opennic.geek/
+    $ darkcat fetch http://grep.geek/             # OpenNIC search
+
+    # Namecoin (.bit) — needs ncdns:
+    $ darkcat fetch http://nx.bit/
+
+    # Alt-root bulk crawl:
+    $ darkcat crawl --seeds https://vitalik.eth/ http://opennic.geek/ \
+                            http://wiki.opennic.geek/ http://welcome.nb/ \
+                    --max-depth 1 --max-pages 80
+
+
+================================================================================
+10.  SEARCH AND ANALYSE WHAT YOU HAVE CRAWLED
+================================================================================
+
+Everything goes into ~/.darkcat/crawl.db (SQLite + FTS5).
+
+    # Full-text search.
+    $ darkcat search "ransomware leak"
+    $ darkcat search "monero AND mixer"
+    $ darkcat search "phishing OR drainer"
+
+    # Strict mode (AND of phrases instead of broad prefix-OR matching).
+    $ darkcat search "wallet drainer" --strict
+
+    # Cap result count.
+    $ darkcat search "0day" --limit 100
+
+    # Top-scoring pages overall (uses --topics scores recorded at crawl time).
+    $ darkcat top --limit 30
+    $ darkcat top --protocol i2p
+
+    # Database statistics.
+    $ darkcat stats
+
+        pages         12 348
+        findings       4 091
+        protocols           tor=8211 i2p=423 ipfs=1106 freenet=88 …
+        topics              0day(412) ransomware(391) monero(284) …
+
+    # See snapshots over time of one URL.
+    $ darkcat history --url "https://tor.taxi/"
+
+    # Show diffs across crawl windows for that URL.
+    $ darkcat diff --url "https://tor.taxi/"
+
+
+================================================================================
+11.  WATCHLIST AND ALERTS
+================================================================================
+
+A watchlist entry fires an alert when a future crawl/scan matches it.
+Match fields are `--target` (substring on the finding's target), `--category`
+(category name), and `--sample` (substring on the raw sample). Add `--regex`
+to treat any of those as regex. Every rule needs a `--sink`.
+
+    # 1) Sample-text keyword "0day" → log line on every match.
+    $ darkcat watch add --sample 0day --sink log
+
+    # 2) Regex on raw card numbers → desktop notification.
+    $ darkcat watch add --sample '\b\d{16}\b' --regex --sink notify
+
+    # 3) Target-domain match on tor.taxi → append JSON to file.
+    $ darkcat watch add --target tor.taxi --sink file:/tmp/alerts.jsonl
+
+    # List current rules.
+    $ darkcat watch list
+
+        id  target    category  sample       regex  sink
+         1  -         -         0day         no     log
+         2  -         -         \b\d{16}\b   yes    notify
+         3  tor.taxi  -         -            no     file:/tmp/alerts.jsonl
+
+    # Test sink #1 by synthesising a finding (use the id from `watch list`).
+    $ darkcat watch test 1
+
+    # Read alerts that fired during recent crawls.
+    $ darkcat alerts --limit 100
+
+
+================================================================================
+12.  DIFF: CHANGE-WATCHING ONE URL OVER TIME
+================================================================================
+
+    # Snapshot 1.
+    $ darkcat fetch https://tor.taxi/
+
+    # … later …
+    $ darkcat fetch https://tor.taxi/
+
+    # Show what changed between snapshots.
+    $ darkcat diff --url "https://tor.taxi/"
+
+        @@ +5 lines added @@
+        + http://newonion12345.onion/   "Just listed"
+        @@ -2 lines removed @@
+        - http://gone67890.onion/       "Down"
+
+Combine with `darkcat schedule` for autonomous monitoring.
+
+
+================================================================================
+13.  PGP KEY HARVEST
+================================================================================
+
+`darkcat keys harvest` walks crawled pages, extracts PGP public-key blocks,
+and indexes them in the DB. Useful for OSINT (link a handle to a key, watch
+for re-use across sites).
+
+    $ darkcat keys harvest                     # extract from existing crawl
+    $ darkcat keys list
+    $ darkcat keys list --fpr DEADBEEF         # filter by fingerprint substring
+    $ darkcat keys show 0xDEADBEEFCAFE1234     # one key by long-id
+
+        keyid     0xDEADBEEFCAFE1234
+        uids      "Alice <alice@example.onion>"
+        seen at   http://forum.onion/u/alice/profile
+                  http://leaks.onion/dump/2026-04
+        first     2026-04-12
+        last      2026-05-03
+
+
+================================================================================
+14.  MIRROR CLUSTERING (FIND CLONES / PHISHES)
+================================================================================
+
+Same content reachable via several URLs (legit mirrors *or* phishes that
+clone the page). `darkcat clusters` groups pages by content fingerprint.
+
+    $ darkcat clusters --min 3 --limit 20
+
+        cluster #1  (4 pages, fp=ab12cd34…)
+          http://realmarket.onion/
+          http://realmarket-mirror1.onion/
+          http://realmarket-mirror2.onion/
+          http://phishclone789.onion/      ← suspicious, registered 2026-04-29
+
+    $ darkcat clusters --json --limit 50 > /tmp/mirrors.json
+
+
+================================================================================
+15.  IMAGE OCR
+================================================================================
+
+Some forums / paste sites post scans / screenshots; OCR pulls text out.
+`darkcat ocr` takes a URL — it fetches the page, runs OCR over inline
+images, and prints the extracted text.
+
+    # OCR every image embedded on a page.
+    $ darkcat ocr https://tor.taxi/
+
+    # Cap how many images we OCR per page (default unlimited):
+    $ darkcat ocr --max-images 5 https://tor.taxi/
+
+    # Override Tesseract language pack (default eng).
+    $ darkcat ocr --lang spa https://example.onion/
+
+OCR backend is Tesseract; install `tesseract` from your distro.
+
+
+================================================================================
+16.  TOR CIRCUITS (NEWNYM, INFO, BRIDGES)
+================================================================================
+
+Needs Tor's ControlPort enabled (CookieAuth or HashedControlPassword).
+
+    # Force a fresh circuit.
+    $ darkcat tor newnym
+
+    # Show current circuits.
+    $ darkcat tor circuits
+
+        id   path                                     state
+        212  guard1 → middle3 → exit7                 BUILT
+        213  guard1 → middle9 → exit2                 EXTENDED
+
+    # Lookup an onion descriptor.
+    $ darkcat tor descriptor duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion
+
+    # Bridge management.
+    $ darkcat tor bridges
+    $ darkcat tor bridges-add "obfs4 1.2.3.4:443 cert=…"
+    $ darkcat tor bridges-clear
+
+
+================================================================================
+17.  LIVENESS PROBING AND LOOP MONITORING
+================================================================================
+
+Periodically check that previously-crawled URLs are still up.
+
+    # One pass over a list of URLs.
+    $ darkcat liveness probe \
+        http://duckduckgogg42xjoc72x3sjasowoarfbgcmvfimaftt6twagswzczad.onion/ \
+        https://tor.taxi/
+
+        ● [tor      ] 200 480ms 18420B  http://...onion/
+        ● [clearnet ] 200 110ms  9821B  https://tor.taxi/
+
+    # Probe everything we know about.
+    $ darkcat liveness probe --known --limit 200
+
+    # Run a continuous loop, every 30 min:
+    $ darkcat liveness loop --known --interval 1800
+
+    # Restrict to one protocol:
+    $ darkcat liveness probe --known --protocol i2p --limit 50
+
+
+================================================================================
+18.  SCHEDULED RE-CRAWLS
+================================================================================
+
+    # Add a recurring crawl every 6 hours. `name` is positional;
+    # --interval is in seconds; --seeds takes URLs.
+    $ darkcat schedule add hacking-forums \
+                           --interval 21600 \
+                           --seeds https://tor.taxi/ https://dark.fail/ \
+                                   https://ahmia.fi/ \
+                           --max-depth 2 --max-pages 200 \
+                           --topics exploit cve 0day payload
+
+    $ darkcat schedule list
+    $ darkcat schedule run-due           # one-shot kick of due jobs
+    $ darkcat schedule loop --tick 60    # daemon-mode runner
+    $ darkcat schedule disable hacking-forums
+    $ darkcat schedule remove  hacking-forums
+
+
+================================================================================
+19.  EXPORT AND IOC FORMATS (JSONL, STIX 2.1, MISP)
+================================================================================
+
+    # Export findings as JSONL, last 7 days.
+    $ darkcat export --format jsonl --since 7d > /tmp/recent.jsonl
+
+    # Export findings as STIX 2.1.
+    $ darkcat export --format stix > /tmp/iocs.stix.json
+
+    # Export findings as MISP-compatible events.
+    $ darkcat export --format misp > /tmp/iocs.misp.json
+
+    # Useful pivot — extract every onion seen in the last 30 days, dedupe.
+    $ darkcat export --format jsonl --since 30d \
+        | jq -r 'select(.protocol=="tor") | .url' | sort -u
+
+
+================================================================================
+20.  CHAT NETWORKS (TELEGRAM, MATRIX, XMPP, …)
+================================================================================
+
+Each chat backend is auto-detected; `darkcat chat backends` reports
+which dependencies are present.
+
+    $ darkcat chat backends
+
+        network    ready   dependency
+        telegram   yes     telethon
+        matrix     yes     matrix-nio
+        xmpp       no      slixmpp     (pip install slixmpp)
+        simplex    no      simplex-cli
+        session    no      session-cli
+        tox        no      pytox
+
+Step-by-step: log into Telegram with a darkcat persona, list channels,
+read one, ingest into the search index.
+
+    # 1. Create a persona dedicated to a given Telegram account.
+    #    Persona name is positional.
+    $ darkcat personas add tg-research \
+                           --network telegram \
+                           --site api.telegram.org \
+                           --handle "+34xxxxxxxxxx"
+
+    # 2. Login. First call prompts for the SMS code interactively.
+    $ darkcat chat login --persona tg-research --network telegram
+
+    # 3. List channels.
+    $ darkcat chat list --persona tg-research --limit 30
+
+        id           kind       name                       people  unread
+        -1001234..   channel    Crypto News (RU)             4231       7
+        -1009876..   group      OSINT EU                      218       3
+
+    # 4. Read recent messages. channel_id is positional.
+    $ darkcat chat read --persona tg-research \
+                        --limit 50 -- -1001234567890
+
+    # 5. Ingest the channel into ~/.darkcat/crawl.db so `search` finds it.
+    $ darkcat chat ingest --persona tg-research \
+                          --limit 500 -- -1001234567890
+    $ darkcat search "exchange listing"
+
+TUI and GUI chat consoles ship a row of preset buttons so you don't have
+to remember which CLI verb each network uses:
+
+    Telegram Join   Telegram Leave   Add Session   Accept SimpleX
+    Login           List             Backends
+
+Each button just pre-fills the Network + Action dropdowns (and shows a
+one-line hint for the expected target syntax) — press Run to execute.
+
+The five chat networks whose clients darkcat does NOT bundle still get
+identity-vault entries so you can rotate / burn them like every other
+account:
+
+    matrix     federated; multiple homeservers — pick with `--instance`
+    xmpp       federated; multiple servers     — pick with `--instance`
+    tox        local keypair (qTox) — no central server, no recovery
+    briar      local keypair (Briar app) — peer-to-peer, briar:// links
+    ricochet   Tor v3 onion identity (Ricochet Refresh) — desktop GUI only
+
+`darkcat chat backends` will list these as "no client bundled" while the
+identity vault still tracks the account. Conversation itself happens in
+the official desktop apps; darkcat handles signup hygiene + linking.
+
+
+================================================================================
+21.  IDENTITY GENERATOR — FULL TOUR
+================================================================================
+
+Compartmented account creation. One persona per project. Manual-assist
+signup through Tor / I2P / proxy / VPN-pin. Soft cap of 5 active personas
+per provider (cap doesn't count `burned`).
+
+21.1  Available providers
+-------------------------
+
+    $ darkcat identity providers
+
+        slug             name              category   transport
+        protonmail       ProtonMail        email      tor
+        tutanota         Tutanota          email      tor
+        mailfence        Mailfence         email      tor
+        disroot          Disroot           email      tor
+        gmail            Gmail             webmail    vpn-pin
+        outlook          Outlook           webmail    vpn-pin
+        yahoo            Yahoo             webmail    vpn-pin
+        protonvpn        ProtonVPN         vpn        tor
+        tunnelbear       TunnelBear        vpn        tor
+        windscribe       Windscribe        vpn        tor
+        reddit           Reddit            social     tor
+        twitter          X / Twitter       social     vpn-pin
+        telegram         Telegram          social     vpn-pin
+        discord          Discord           social     vpn-pin
+        mastodon         Mastodon          social     tor
+        matrix           Matrix            social     tor   (multi-instance)
+        xmpp             XMPP / Jabber     social     tor   (multi-instance)
+        session          Session           social     tor
+        simplex          SimpleX           social     tor
+        tox              Tox               social     tor   (local keygen)
+        briar            Briar             social     tor   (local keygen)
+        ricochet         Ricochet Refresh  social     tor   (onion keygen)
+
+    # Drill into one profile (signup URL, fields, no-phone path, ToS).
+    $ darkcat identity providers --slug protonmail
+    $ darkcat identity providers --slug matrix       # see all homeservers
+    $ darkcat identity providers --slug xmpp         # see all servers
+
+21.2  Create a ProtonMail identity
+----------------------------------
+
+    $ darkcat identity new --provider protonmail \
+                           --transport tor \
+                           --purpose "research-forum-X"
+
+        + identity protonmail-quiet_river_4821 created (protonmail/email)
+          handle        quiet_river_4821
+          password      8x2-fJW9_zT…vGqM   (shown once — store now)
+          display_name  Mira Holt
+          locale/tz     en_US / America/New_York
+          birthdate     1991-07-14
+          bio           security & privacy • EU-based, mostly evenings — no DMs
+          transport     tor (auth=4f2a91e1c8b3d7a0)
+          signup_url    https://account.proton.me/signup
+
+          No-phone path: use the onion (protonmailrmez3lotcc...onion)
+          and select email-only verification.
+          Status: pending — run `darkcat identity confirm <name>` after signup.
+
+    # Open the signup page through Tor (Tor Browser if installed, else
+    # your default browser with HTTPS_PROXY=socks5h://127.0.0.1:9050):
+    $ darkcat identity launch protonmail-quiet_river_4821
+
+    # Or fold the post-signup capture into one command — `--capture`
+    # drops you into an inline prompt for the final handle, recovery
+    # email, and recovery codes the provider just showed once:
+    $ darkcat identity launch protonmail-quiet_river_4821 --capture
+
+    # In the TUI and GUI, pressing Launch / clicking 'Launch signup'
+    # opens the signup page and, after dismissing the launch block,
+    # pops the Edit form pre-loaded with the persona — same effect,
+    # without typing into a terminal.
+
+    # After completing signup in the browser:
+    $ darkcat identity confirm protonmail-quiet_river_4821
+
+    # Months later, when the project ends:
+    $ darkcat identity burn protonmail-quiet_river_4821 \
+                            --note "project closed 2027-02"
+
+Same flow from the GUI: launch `darkcat gui`, menu Identity → Open vault…
+(Ctrl+Shift+I), click `New`, pick `protonmail`, click `Create`. Select
+the row, click `Launch signup`. After signup, click `Confirm`.
+
+21.3  Other providers — concrete commands
+-----------------------------------------
+
+    # Tutanota (no phone ever):
+    $ darkcat identity new --provider tutanota --purpose "newsletter-account"
+
+    # Disroot (manual approval — wait 24-48h before confirm):
+    $ darkcat identity new --provider disroot --purpose "activist-mail"
+
+    # Mastodon, with a specific instance:
+    $ darkcat identity new --provider mastodon --instance fosstodon \
+                           --purpose "FOSS announcements"
+    $ darkcat identity new --provider mastodon --instance infosec-exchange \
+                           --purpose "infosec posting"
+
+    # Matrix — pick a homeserver. The signup_url and persona's site/
+    # network_or_domain are derived from the chosen instance:
+    $ darkcat identity new --provider matrix --instance tchncs \
+                           --purpose "research-room-X"
+    $ darkcat identity new --provider matrix --instance disroot \
+                           --purpose "activist-room"
+
+    # XMPP — pick a server:
+    $ darkcat identity new --provider xmpp --instance disroot \
+                           --purpose "private XMPP"
+    $ darkcat identity new --provider xmpp --instance jabber-at
+
+    # Local-keygen networks — no signup form, the client generates the
+    # ID; record it in the vault for hygiene + linking, then paste the
+    # actual ID back via `identity edit` once the client gives it to you:
+    $ darkcat identity new --provider session   --purpose "anon DM"
+    $ darkcat identity new --provider simplex   --purpose "anon DM"
+    $ darkcat identity new --provider tox       --purpose "p2p chat"
+    $ darkcat identity new --provider briar     --purpose "OOB chat"
+    $ darkcat identity new --provider ricochet  --purpose "onion DM"
+
+    # Reddit through Tor:
+    $ darkcat identity new --provider reddit --transport tor \
+                           --purpose "lurk on r/netsec"
+
+    # ProtonVPN (free tier — email only, no phone):
+    $ darkcat identity new --provider protonvpn --purpose "vpn-egress-EU"
+
+If you pass an `--instance` slug the provider does not advertise, the
+command fails fast with the list of available hosts — no silent fallback
+to the default homeserver.
+
+21.4  Listing, showing, rotating, linking
+-----------------------------------------
+
+    # List all identities, filter by provider/status/purpose.
+    $ darkcat identity list
+    $ darkcat identity list --provider protonmail
+    $ darkcat identity list --status confirmed
+    $ darkcat identity list --purpose "research"
+
+    # Show one (secrets masked by default).
+    $ darkcat identity show protonmail-quiet_river_4821
+    # Reveal secrets — prompts y/N unless DARKCAT_VAULT_PASSPHRASE is set.
+    $ darkcat identity show protonmail-quiet_river_4821 --reveal
+
+    # Rotate the password (old value overwritten).
+    $ darkcat identity rotate-password protonmail-quiet_river_4821 \
+                                       --print
+
+    # Link a recovery account: child = the protected one, parent = recovery.
+    $ darkcat identity link tutanota-stale_owl_3345 \
+                            protonmail-quiet_river_4821
+
+    # Export to env vars for scripting.
+    $ darkcat identity export protonmail-quiet_river_4821 --format env
+
+        DARKCAT_ID_NAME='protonmail-quiet_river_4821'
+        DARKCAT_ID_PROVIDER='protonmail'
+        DARKCAT_ID_STATUS='confirmed'
+        DARKCAT_ID_HANDLE='quiet_river_4821'
+        DARKCAT_ID_PASSWORD='********'                   # masked unless --reveal
+
+The same set of actions is available from the TUI and the GUI's Identity
+dialog so you don't have to memorise CLI flags for routine vault chores:
+
+    TUI Identity screen (press `i`):
+        [L]aunch       — open the persona's signup URL through Tor again
+        [S]how         — prompt "Reveal?" and dump the persona record
+        L[i]nk         — pick parent + child personas
+        [U]nlink       — break a previously recorded edge
+        [E]dit         — credentials editor (see §21.5)
+        [N]ew, [C]onfirm, [B]urn, [R]efresh, [Esc]ape — unchanged
+
+    GUI Identities dialog (menu Identity → Open vault…):
+        New, Launch signup, Show, Confirm, Edit, Link, Unlink, Burn —
+        same actions wired through `invoke_cli_capturing`. The Show
+        button opens a Reveal / Masked picker before dumping secrets so
+        revealed credentials never land on the screen by accident.
+
+Encrypted vaults (`personas encrypt`) are now first-class in the TUI and
+GUI: the first action against a `.gpg` vault opens a passphrase prompt,
+the verified value is cached for the lifetime of the dialog, and every
+follow-up action threads it to `cmd_identity` via the same
+`DARKCAT_VAULT_PASSPHRASE` env var the CLI itself honours.
+
+21.5  Editing credentials after manual signup
+---------------------------------------------
+
+`identity new` generates a candidate handle / display name / locale; the
+provider's signup form may assign different final values. Use `identity
+edit` to record the real ones, plus anything the form only shows once
+(recovery codes, recovery email, BIP-39 phrase). The same surface is
+available from the TUI (`E` on the selected row) and the GUI (`Edit`
+button in the Identities dialog).
+
+    # Set the final handle the homeserver gave you, plus a recovery email
+    # already in the vault:
+    $ darkcat identity edit matrix-ashen_hawk_3760 \
+                            --handle "@alice:tchncs.de" \
+                            --email   "alice@tchncs.de" \
+                            --recovery-email "recover@proton.me"
+
+    # Append two recovery codes (run again to append more):
+    $ darkcat identity edit gmail-quiet_owl_3221 \
+                            --recovery-code "aaa-bbb" \
+                            --recovery-code "ccc-ddd"
+
+    # Replace the whole recovery_codes list (Gmail re-issues every code):
+    $ darkcat identity edit gmail-quiet_owl_3221 \
+                            --recovery-codes-replace \
+                            --recovery-code "new-1" --recovery-code "new-2"
+
+    # Pass an empty string to *clear* an optional field:
+    $ darkcat identity edit matrix-ashen_hawk_3760 --notes ""
+
+`identity edit NAME` with no field flags is a hard error so an empty TUI
+submit can't silently no-op.
+
+21.6  Mail-provider presets for `personas add`
+----------------------------------------------
+
+`mail send` / `mail check` need an SMTP/IMAP coordinate. Five presets
+ship the common ones so you don't have to remember the host / port / TLS
+combination — pick one with `--mail-provider`:
+
+    $ darkcat personas mail-providers
+
+        slug              site                          notes
+        proton-bridge     127.0.0.1:1025                local Proton Bridge
+        disroot           disroot.org:587               STARTTLS / IMAP 993 SSL
+        mailfence         smtp.mailfence.com:465        SMTPS / IMAP 993 SSL
+        gmail-app-pw      smtp.gmail.com:465            requires app password
+        fastmail          smtp.fastmail.com:465         SMTPS / IMAP 993 SSL
+
+    # Persona for a ProtonMail account routed through the Bridge:
+    $ darkcat personas add proton-acct \
+                           --mail-provider proton-bridge \
+                           --handle alice@proton.me \
+                           --password "<bridge-app-pw>"
+
+Explicit CLI flags always win over preset defaults — passing `--site` or
+`--notes` overrides the preset's value. Tutanota is intentionally absent:
+it has no SMTP / IMAP surface for third-party clients.
+
+The same preset picker is exposed in the TUI and GUI so you don't have to
+drop to the shell for a one-off mail persona:
+
+    TUI:  press `p` (Persona) from the main screen, fill name + mail
+          provider preset + handle, then Ctrl+Enter to add.
+    GUI:  menu Mail → Add mail persona…, pick a preset from the dropdown,
+          click Add.
+
+Both forms route through the same `personas add` handler, so the override
+precedence is identical to the CLI: explicit Site / Notes / Network
+fields beat the preset.
+
+
+================================================================================
+22.  CHEAT SHEET — EVERYTHING IN ONE SCREEN
+================================================================================
+
+Health & discovery
+    darkcat status
+    darkcat doctor
+    darkcat list all
+    darkcat list tor
+    darkcat seeds tor
+    darkcat discover "hacking forum"
+
+Crawl & fetch
+    darkcat fetch <url>
+    darkcat crawl --seeds <url> [<url>...] --max-depth 2 --max-pages 200 \
+                  --topics kw1 kw2 kw3
+    darkcat crawl --seed-file /tmp/seeds.txt --max-depth 2 --max-pages 200
+    darkcat schedule add jobname --interval 21600 --seeds <url> [<url>...] \
+                                 --max-depth 2 --max-pages 200
+
+Search & analyse
+    darkcat search "phrase OR another"
+    darkcat search "wallet drainer" --strict
+    darkcat top --limit 25
+    darkcat top --protocol i2p
+    darkcat stats
+    darkcat history --url <url>
+    darkcat diff    --url <url>
+    darkcat clusters --min 3 --limit 20
+    darkcat keys list
+    darkcat ocr <url>
+
+Watchlist & alerts
+    darkcat watch add --sample 0day --sink log
+    darkcat watch add --target tor.taxi --sink notify
+    darkcat watch list
+    darkcat watch test <id>
+    darkcat alerts --limit 100
+
+Liveness
+    darkcat liveness probe --known
+    darkcat liveness loop  --known --interval 1800
+
+Tor control
+    darkcat tor newnym
+    darkcat tor circuits
+    darkcat tor descriptor <onion>
+    darkcat tor bridges-add "obfs4 ip:port cert=…"
+
+Identity Generator
+    darkcat identity providers
+    darkcat identity providers --slug protonmail
+    darkcat identity new --provider <slug> --transport tor --purpose "…"
+    darkcat identity new --provider matrix --instance tchncs       # multi-host
+    darkcat identity launch <name>
+    darkcat identity confirm <name>
+    darkcat identity edit  <name> --handle "@x:y" --email x@y --recovery-code …
+    darkcat identity burn  <name> --note "…"
+    darkcat identity list
+    darkcat identity show <name> [--reveal]
+    darkcat identity rotate-password <name> --print
+    darkcat identity link <parent> <child>
+    darkcat identity export <name> --format env
+
+Personas (mail presets)
+    darkcat personas mail-providers
+    darkcat personas add <name> --mail-provider proton-bridge \
+                                --handle alice@proton.me
+
+Chat
+    darkcat chat backends
+    darkcat chat login   --persona <name> --network <net>
+    darkcat chat list    --persona <name>
+    darkcat chat read    --persona <name> --limit 50  -- <channel_id>
+    darkcat chat ingest  --persona <name> --limit 500 -- <channel_id>
+
+Export
+    darkcat export --format jsonl --since 7d
+    darkcat export --format stix  --kind findings
+    darkcat export --format misp  --kind findings
+
+Frontends
+    darkcat            # CLI
+    darkcat shell      # interactive REPL
+    darkcat tui        # Textual full-screen TUI
+    darkcat gui        # Tkinter desktop window
+
+
+================================================================================
+23.  GUI WALKTHROUGH — WHERE TO CLICK
+================================================================================
+
+Launch:
+
+    $ darkcat gui
+
+23.1  Window map (where things live)
+------------------------------------
+
+    ┌──────────────────────────────────────────────────────────────────────┐
+    │  ░▒▓ darkcat ▓▒░       v0.4.0              (banner — logo + tagline) │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  File    View    Identity    Help                       (MENU BAR)   │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  ● tor   ● i2p   ● ipfs   ● freenet   ● gemini   …    [ RESCAN ]    │ ← STATUS PILLS
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  ▓▒░ console ░▒▓                                                     │
+    │   › topics   [______________________________________________]        │ ← row 1
+    │   › proto    [▼ tor   ]   pages [50 ]  depth [2 ]  threshold [0  ]   │ ← row 2
+    │   › actions  [▶ CRAWL] [✕ STOP]   › search [____] [SEARCH]           │ ← row 3
+    │                                   › fetch  [____] [FETCH]            │
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  ▓▒░ log ░▒▓                       │  ▓▒░ results ░▒▓                │
+    │  [crawl] fetched 35/200 …          │  score │ category │ proto │ url │
+    │  [crawl] depth=2  host=tor.taxi    │  0.91  │ leak     │ tor   │ …   │ ← left-click
+    │  [done] 200 pages, 18 findings     │  0.84  │ market   │ tor   │ …   │   header
+    │                                    │  …                              │   to sort.
+    │                                    │                                 │   Right-click
+    │                                    │                                 │   a row for
+    │                                    │                                 │   actions.
+    ├──────────────────────────────────────────────────────────────────────┤
+    │  Ctrl+E export · F5 refresh …          [REFRESH] [EXPORT] [✕ QUIT]   │ ← bottom bar
+    └──────────────────────────────────────────────────────────────────────┘
+
+Menu contents (exact labels):
+
+    File ▾                     View ▾                       Identity ▾          Help ▾
+    ─────                      ─────                        ─────────           ─────
+    Export results…  Ctrl+E    Refresh results       F5     Open vault…  ⇧⌃I    Keyboard shortcuts…  F2
+    ──────                     Re-probe transports   ⌃R     ───────────         Run doctor…
+    Quit             Ctrl+Q    Database statistics   ⌃I                         About darkcat…       F1
+                               ──────────────
+                               Clear log             ⌃L
+
+23.2  Day-zero health check
+---------------------------
+    Click:  View → Re-probe transports         (or press Ctrl+R)
+    What happens:  the dots next to `tor / i2p / ipfs / freenet / …` flip
+    green if the transport is reachable, red if not. The bottom message
+    bar shows `▸ scanning…` while it runs.
+    If you want a verbose report:  Help → Run doctor…
+
+23.3  Crawl a built-in protocol pack
+------------------------------------
+    1. › proto       click the drop-down, pick `tor` (or `i2p`, `ipfs`,
+                     `gemini`, …, or `all`).
+    2. › topics      type space-separated keywords, e.g.:
+                       exploit cve 0day phishing
+    3. pages         change `50` → `200`
+       depth         leave `2`
+       threshold     leave `0`
+    4. Click [▶ CRAWL]      (or press Enter in the topics field).
+    5. Watch the log pane on the left fill with `[crawl] fetched N/M …`.
+       To stop: click [✕ STOP] or press Ctrl+C.
+    6. When you see `[done]`, the right pane (results) is sorted by
+       score, highest first. Click any column header to re-sort.
+
+    Note: the GUI crawls the built-in seed list for the selected protocol.
+    To crawl a custom seed list, use the CLI:
+        darkcat crawl --seed-file /tmp/seeds.txt --max-depth 2 …
+
+23.4  Fetch one URL (single-shot)
+---------------------------------
+    1. In the › fetch row, click the text box and type the URL, e.g.:
+         https://tor.taxi/
+       or  ipns://docs.ipfs.tech
+       or  gemini://geminiprotocol.net/
+    2. Click [FETCH] (or press Enter).
+    3. The page is saved to ~/.darkcat/crawl.db; the log shows
+       `[fetch] 200 OK 12345 bytes`.
+
+23.5  Search what you have crawled
+----------------------------------
+    1. In the › search row, click the text box and type a query:
+         monero AND mixer
+    2. Click [SEARCH] (or press Enter).
+    3. Hits replace the right-pane table.
+    4. Right-click any row to get a context menu:
+         • Copy URL
+         • Fetch this URL
+         • Show mirrors (SimHash)
+         • Show history
+    5. Double-click a row to copy its URL to the clipboard.
+
+23.6  Database statistics
+-------------------------
+    Click:  View → Database statistics          (or press Ctrl+I)
+    A modal opens with: total pages, findings, per-protocol counts,
+    top topics, watchlist hit count.
+
+23.7  Identity Generator — create a ProtonMail account, click by click
+----------------------------------------------------------------------
+This is the GUI equivalent of CLI section 21.
+
+  STEP 1.  Open the vault.
+           Click:  Identity (menu bar) → Open vault…
+           Shortcut:  Ctrl+Shift+I
+           ➜ A modal titled "darkcat — identities" appears.
+             It looks like:
+
+               ┌── darkcat — identities ─────────────────────────────────┐
+               │  name           provider   status    transport  purpose │
+               │  ─────────────  ─────────  ────────  ─────────  ─────── │
+               │   (empty on first run)                                  │
+               │                                                         │
+               │  [New] [Launch signup] [Confirm] [Edit] [Burn]          │
+               │  [Refresh] [Close]                                      │
+               └─────────────────────────────────────────────────────────┘
+
+  STEP 2.  Click  [New]   (the leftmost button in the bottom row).
+           ➜ A small dialog "darkcat — new identity" appears with four
+             fields:
+
+               ┌── darkcat — new identity ────────────────────┐
+               │  Provider                                    │
+               │  [▼ discord — Discord (social)            ]  │
+               │  Instance (host)                             │
+               │  [▼ (provider default / N/A)              ]  │
+               │  Transport                                   │
+               │  [▼ tor                                   ]  │
+               │  Purpose tag (optional)                      │
+               │  [_______________________________________]   │
+               │                                              │
+               │  [Create]                          [Cancel]  │
+               └──────────────────────────────────────────────┘
+
+           The Instance picker only lights up for multi-host providers
+           (matrix, xmpp, mastodon). For everything else it stays on
+           "(provider default / N/A)" and is ignored. Picking
+           `tchncs — German community homeserver` from the Instance list
+           for `matrix` is equivalent to passing `--instance tchncs` on
+           the CLI: the persona's site / network_or_domain become
+           `matrix.tchncs.de` instead of the matrix.org default.
+
+  STEP 3.  Pick the provider.
+           Click the Provider drop-down. Scroll to:
+                protonmail — Proton Mail (email)
+           Click it.
+
+  STEP 4.  Pick the transport.
+           Leave the Transport drop-down on  `tor`  (default).
+           (Switch to `i2p` or `proxy` only if you know why.)
+
+  STEP 5.  (Optional) Type a purpose tag.
+           Click in the "Purpose tag" box and type, e.g.:
+                research-forum-X
+           This tag shows up in the table and helps you remember why
+           the identity exists.
+
+  STEP 6.  Click  [Create].
+           ➜ The dialog closes.
+           ➜ A new row appears in the identities table, e.g.:
+                protonmail-quiet_river_4821 │ protonmail │ pending │ tor │ research-forum-X
+           ➜ The row is auto-selected (highlighted).
+           If something failed, a red error dialog pops up — read it,
+           don't dismiss it blindly.
+
+  STEP 7.  Open the signup page in a Tor-routed browser.
+           With the new row still selected, click  [Launch signup].
+           ➜ Tor Browser opens (if installed). Otherwise your default
+             browser opens with HTTPS_PROXY=socks5h://127.0.0.1:9050.
+           ➜ The log panel behind the dialog prints the helper block:
+                handle:        quiet_river_4821
+                password:      8x2-fJW9_zT…vGqM   (copy now — shown once)
+                display name:  Mira Holt
+                bio:           security & privacy • EU-based, mostly evenings — no DMs
+                signup URL:    https://account.proton.me/signup
+                no-phone path: protonmailrmez3lotcc…onion → email-only verify
+
+  STEP 8.  Complete the signup form in the browser.
+                • Username  → paste handle from STEP 7
+                • Password  → paste password from STEP 7
+                • Recovery  → leave blank or use a second darkcat identity
+                • If asked for a phone: switch to the .onion (STEP 7
+                  printed it) and select email-only verification.
+           Solve any captcha. Click "Create account" on Proton's page.
+
+  STEP 9.  Tell darkcat the signup is done.
+           Switch back to the darkcat window. The identity row should
+           still be selected. Click  [Confirm].
+           ➜ Status flips:  pending → confirmed.
+           ➜ The log shows `~ identity protonmail-quiet_river_4821
+             confirmed`.
+
+  STEP 10. (Optional) Edit credentials after signup.
+           Select the row → click  [Edit].
+           ➜ A "darkcat — edit <name>" dialog opens with the persona's
+             current handle, email, recovery email, display name,
+             recovery phrase, recovery-codes count, and notes prefilled.
+             Type into any field; leaving it unchanged keeps the
+             current value, an empty string clears it.
+             • Save              — apply the changes (only the diffs
+                                    are forwarded).
+             • Rotate password   — generate a fresh password and
+                                    overwrite the old one. The new value
+                                    is retrievable via
+                                    `darkcat identity show <name> --reveal`.
+             • Cancel            — discard.
+           Recovery codes are appended (comma-separated). For Gmail-
+           style providers that re-issue every code, edit from the CLI
+           with `--recovery-codes-replace`.
+
+           The TUI exposes the same editor: press `E` on the highlighted
+           row inside `darkcat tui` → menu → Open vault.
+
+  STEP 11. Burn the identity when the project ends.
+           Select the row → click  [Burn]  → type a one-line note in
+           the prompt → OK.
+           ➜ Status flips to `burned`. The row stays in the table but
+             no longer counts toward the per-provider cap.
+
+23.8  Export results to a text file
+-----------------------------------
+    Click:  File → Export results…             (or press Ctrl+E)
+    Pick a path in the file dialog. The current results-table contents
+    are written as a flat text file.
+
+23.9  Keyboard cheatsheet (Help → Keyboard shortcuts…  or  F2)
+--------------------------------------------------------------
+
+    Crawl & search                Identity / data
+    ──────────                    ──────────────
+    Enter (in topics)  start crawl       Ctrl+Shift+I  Identity vault
+    Enter (in search)  run search        Ctrl+E        Export results
+    Enter (in fetch)   fetch URL         Ctrl+I        Database stats
+    Ctrl+C             stop crawl        F5            Refresh results
+                                         Ctrl+R        Re-probe transports
+
+    Help & info
+    ───────────
+    F1     About darkcat
+    F2     This shortcuts dialog
+    Ctrl+L Clear log panel
+    Ctrl+Q Quit darkcat
+
+
+================================================================================
+End of instructions.txt — see also docs/QUICKSTART.md, docs/USERGUIDE.md,
+docs/NETWORKS.md, docs/INTERNALS.md, docs/CONFIG.md, docs/identity/.
+================================================================================

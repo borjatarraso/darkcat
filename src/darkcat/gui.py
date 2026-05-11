@@ -416,6 +416,43 @@ class DarkcatGUI:
         )
         menubar.add_cascade(label="View", menu=view_menu)
 
+        identity_menu = tk.Menu(
+            menubar, tearoff=0,
+            bg=PANEL_BG, fg=NEON_GREEN,
+            activebackground=NEON_PINK, activeforeground=DEEP_BG,
+        )
+        identity_menu.add_command(
+            label="Open vault…", accelerator="Ctrl+Shift+I",
+            command=self._show_identity,
+        )
+        menubar.add_cascade(label="Identity", menu=identity_menu)
+
+        chat_menu = tk.Menu(
+            menubar, tearoff=0,
+            bg=PANEL_BG, fg=NEON_GREEN,
+            activebackground=NEON_PINK, activeforeground=DEEP_BG,
+        )
+        chat_menu.add_command(
+            label="Chat console…", accelerator="Ctrl+Shift+C",
+            command=self._show_chat,
+        )
+        menubar.add_cascade(label="Chat", menu=chat_menu)
+
+        mail_menu = tk.Menu(
+            menubar, tearoff=0,
+            bg=PANEL_BG, fg=NEON_GREEN,
+            activebackground=NEON_PINK, activeforeground=DEEP_BG,
+        )
+        mail_menu.add_command(
+            label="Mail console…", accelerator="Ctrl+Shift+M",
+            command=self._show_mail,
+        )
+        mail_menu.add_command(
+            label="Add mail persona…",
+            command=self._show_persona_add,
+        )
+        menubar.add_cascade(label="Mail", menu=mail_menu)
+
         help_menu = tk.Menu(
             menubar, tearoff=0,
             bg=PANEL_BG, fg=NEON_GREEN,
@@ -887,6 +924,9 @@ class DarkcatGUI:
         self.root.bind("<Control-q>", lambda _e: self._on_close())
         self.root.bind("<F1>",        lambda _e: self._show_about())
         self.root.bind("<F2>",        lambda _e: self._show_shortcuts())
+        self.root.bind("<Control-I>", lambda _e: self._show_identity())
+        self.root.bind("<Control-C>", lambda _e: self._show_chat())
+        self.root.bind("<Control-M>", lambda _e: self._show_mail())
 
     def _on_ctrl_c(self, event):
         """Route Ctrl+C: copy if a text widget has a selection, else abort
@@ -1514,6 +1554,1696 @@ class DarkcatGUI:
         dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
         dlg.grab_set()
         dlg.focus_set()
+
+    def _show_identity(self) -> None:
+        """Modal Identity-vault browser — list / new / confirm / burn / launch.
+
+        Mirrors the TUI's IdentityScreen so the four frontends stay in
+        sync. Encrypted vaults are read-only here; the dialog shows a
+        notice and steers the operator at the CLI for those.
+
+        Buttons:
+          • New         — generate a fresh persona for a chosen provider
+                          (e.g. ProtonMail). Asks for provider / transport /
+                          purpose, then writes it to the vault.
+          • Launch signup — open the selected persona's signup URL through
+                          its recorded transport (Tor Browser if installed,
+                          otherwise system browser with HTTP(S)_PROXY set).
+          • Confirm     — mark a persona ``confirmed`` after manual signup.
+          • Burn        — mark a persona ``burned``; the slot frees up.
+          • Refresh / Close.
+        """
+        import argparse as _argparse
+        import time as _time
+
+        from darkcat import personas as pv
+        from darkcat.identity import IdentityVault, invoke_cli_capturing
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("darkcat — identities")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(self.root)
+        try:
+            self.root.update_idletasks()
+            px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 820) // 2)
+            py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 520) // 3)
+            dlg.geometry(f"820x520+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("820x520")
+
+        # Treeview dark theme — applied per-dialog so we don't pollute
+        # other Treeviews in the GUI. Names are unique to avoid clashing
+        # with the global ttk styles set in _apply_dark_theme.
+        style = ttk.Style(dlg)
+        style.configure(
+            "Identity.Treeview",
+            background=PANEL_BG, fieldbackground=PANEL_BG,
+            foreground=NEON_GREEN, bordercolor=DARK_GREEN,
+            lightcolor=DARK_GREEN, darkcolor=DARK_GREEN,
+            font=(self._mono, 9), rowheight=22,
+        )
+        style.configure(
+            "Identity.Treeview.Heading",
+            background=DEEP_BG, foreground=NEON_PINK,
+            font=(self._mono, 9, "bold"),
+        )
+        style.map(
+            "Identity.Treeview",
+            background=[("selected", "#1a0033")],
+            foreground=[("selected", NEON_CYAN)],
+        )
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=16, pady=12)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="Identities",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        tk.Label(
+            body,
+            text=("Create one persona per project, then click "
+                  "'Launch signup' to open the provider's signup page "
+                  "through Tor."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=780, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        notice = tk.Label(
+            body, text="", fg=AMBER, bg=DEEP_BG, font=(self._mono, 9),
+        )
+        notice.pack(anchor="w")
+
+        cols = ("name", "provider", "status", "purpose", "created")
+        tree = ttk.Treeview(
+            body, columns=cols, show="headings", height=14,
+            style="Identity.Treeview",
+        )
+        tree.heading("name",     text="NAME")
+        tree.heading("provider", text="PROVIDER")
+        tree.heading("status",   text="STATUS")
+        tree.heading("purpose",  text="PURPOSE")
+        tree.heading("created",  text="CREATED")
+        tree.column("name",     width=200, anchor="w")
+        tree.column("provider", width=120, anchor="w")
+        tree.column("status",   width=90,  anchor="w")
+        tree.column("purpose",  width=220, anchor="w")
+        tree.column("created",  width=110, anchor="w")
+        tree.pack(fill="both", expand=True, pady=(8, 8))
+
+        # Holds the loaded vault + cached passphrase. ``passphrase`` is
+        # set after the operator unlocks an encrypted vault, then threaded
+        # into ``_run`` via ``DARKCAT_VAULT_PASSPHRASE`` so the CLI handler
+        # can re-open the same file without re-prompting on every action.
+        state: dict[str, object] = {
+            "vault": None, "encrypted": False, "passphrase": None,
+        }
+
+        def _vault_is_encrypted() -> bool:
+            path = pv.vault_path()
+            return path.exists() and path.suffix == ".gpg"
+
+        def _load_vault() -> Optional[IdentityVault]:
+            path = pv.vault_path()
+            state["encrypted"] = path.exists() and path.suffix == ".gpg"
+            try:
+                inner = pv.Vault(path=path, passphrase=state["passphrase"])
+            except RuntimeError as e:
+                notice.configure(text=f"could not open vault: {e}")
+                return None
+            return IdentityVault(inner)
+
+        def _unlock_then(callback) -> None:
+            """Prompt for a passphrase if the vault is encrypted and we
+            don't yet have one cached, verify it opens the file, then run
+            ``callback``. Wrong-passphrase loops re-prompt until cancel."""
+            if not _vault_is_encrypted() or state["passphrase"] is not None:
+                callback()
+                return
+            pw = self._open_passphrase_dialog(dlg, "Vault is encrypted")
+            if pw is None:
+                notice.configure(text="vault locked — close and reopen to retry")
+                return
+            try:
+                pv.Vault(path=pv.vault_path(), passphrase=pw)
+            except RuntimeError as e:
+                messagebox.showerror(
+                    "darkcat — vault locked",
+                    f"wrong passphrase: {e}", parent=dlg,
+                )
+                _unlock_then(callback)
+                return
+            state["passphrase"] = pw
+            callback()
+
+        def _refresh() -> None:
+            for iid in tree.get_children():
+                tree.delete(iid)
+            v = _load_vault()
+            state["vault"] = v
+            if v is None:
+                return
+            notice.configure(text="")
+            for p in v.all_identities():
+                created = _time.strftime("%Y-%m-%d", _time.localtime(p.created_at))
+                tree.insert(
+                    "", "end", iid=p.name,
+                    values=(p.name, p.provider or "-", p.status,
+                            p.purpose_tag or "-", created),
+                )
+
+        def _selected_name() -> Optional[str]:
+            sel = tree.selection()
+            return sel[0] if sel else None
+
+        def _last_error_line(stderr: str) -> str:
+            for line in reversed(stderr.splitlines()):
+                line = line.strip()
+                if line:
+                    return line
+            return "operation failed"
+
+        def _run(ns) -> tuple[int, str, str]:
+            """Invoke ``cmd_identity`` with stdout / stderr captured. The
+            cached vault passphrase (if any) is exposed to the handler
+            through ``DARKCAT_VAULT_PASSPHRASE`` so encrypted vaults work
+            end-to-end without a second prompt per action."""
+            import os as _os
+            saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+            if state["passphrase"] is not None:
+                _os.environ["DARKCAT_VAULT_PASSPHRASE"] = state["passphrase"]
+            try:
+                return invoke_cli_capturing(self.cfg, ns)
+            except SystemExit as e:
+                return (int(e.code) if isinstance(e.code, int) else 2, "", "")
+            except Exception as e:
+                return (2, "", f"{type(e).__name__}: {e}")
+            finally:
+                if state["passphrase"] is not None:
+                    if saved is None:
+                        _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
+                    else:
+                        _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+
+        def _new_identity() -> None:
+            if state["vault"] is None:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Vault is unavailable — check ~/.local/share/darkcat.",
+                    parent=dlg,
+                )
+                return
+            payload = self._open_identity_new_dialog(dlg)
+            if payload is None:
+                return
+            ns = _argparse.Namespace(
+                cmd="identity", action="new",
+                provider=payload["provider"],
+                transport=payload["transport"],
+                purpose=payload["purpose"] or None,
+                name=None, instance=payload.get("instance"),
+                recovery_email=None,
+                cap=None, force=False, password_length=24,
+                proxy_url=None, pin_to=None,
+                launch=False, json=False,
+            )
+            rc, out, err = _run(ns)
+            if rc == 0:
+                messagebox.showinfo(
+                    "darkcat — identity created",
+                    out + "\nNext: select the row and click "
+                    "'Launch signup' to open the signup page through Tor. "
+                    "After completing the signup, click 'Confirm'.",
+                    parent=dlg,
+                )
+            else:
+                messagebox.showerror(
+                    "darkcat — identity", _last_error_line(err),
+                    parent=dlg,
+                )
+            _refresh()
+
+        def _confirm_selected() -> None:
+            name = _selected_name()
+            if not name:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Select a row first.",
+                    parent=dlg,
+                )
+                return
+            if state["vault"] is None:
+                return
+            ns = _argparse.Namespace(cmd="identity", action="confirm", name=name)
+            rc, _out, err = _run(ns)
+            if rc != 0:
+                messagebox.showerror(
+                    "darkcat — confirm", _last_error_line(err),
+                    parent=dlg,
+                )
+            _refresh()
+
+        def _burn_selected() -> None:
+            name = _selected_name()
+            if not name:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Select a row first.",
+                    parent=dlg,
+                )
+                return
+            if state["vault"] is None:
+                return
+            if not messagebox.askyesno(
+                "darkcat — burn identity",
+                f"Mark {name!r} as burned? The slot stops counting against "
+                "the per-provider cap, but the row stays in the vault for "
+                "audit.",
+                parent=dlg,
+            ):
+                return
+            ns = _argparse.Namespace(
+                cmd="identity", action="burn", name=name, note=None,
+            )
+            rc, _out, err = _run(ns)
+            if rc != 0:
+                messagebox.showerror(
+                    "darkcat — burn", _last_error_line(err),
+                    parent=dlg,
+                )
+            _refresh()
+
+        def _launch_selected() -> None:
+            name = _selected_name()
+            if not name:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Select a row first, then click 'Launch signup' to open "
+                    "its signup page.",
+                    parent=dlg,
+                )
+                return
+            if state["vault"] is None:
+                return
+            # capture=False — the CLI capture path is interactive
+            # readline, which deadlocks under a Tk modal. We open the
+            # edit dialog below instead so the operator can write back
+            # the real handle / recovery codes through the GUI.
+            ns = _argparse.Namespace(
+                cmd="identity", action="launch", name=name,
+                no_spawn=False, capture=False,
+            )
+            rc, out, err = _run(ns)
+            if rc != 0:
+                messagebox.showerror(
+                    "darkcat — launch", _last_error_line(err),
+                    parent=dlg,
+                )
+                return
+            # Render the launch block so the operator can read the
+            # provider-specific checklist while completing the form.
+            self._open_result_dialog(
+                dlg, f"Signup launched — {name}", out or "(launched)",
+            )
+            # Then pop the edit form pre-loaded with the persona row so
+            # the values shown once during signup (handle, recovery
+            # codes, recovery email) survive the session.
+            vault = state["vault"]
+            if vault is None:
+                return
+            p = vault.inner.get(name)
+            if p is None:
+                _refresh()
+                return
+            payload = self._open_identity_edit_dialog(dlg, p)
+            if not payload:
+                return
+            action = payload.pop("_action", "edit")
+            if action == "rotate-password":
+                # The launch flow doesn't go through rotate-password,
+                # but the dialog allows it; honour the operator's
+                # explicit choice.
+                ns_r = _argparse.Namespace(
+                    cmd="identity", action="rotate-password",
+                    name=name, length=24, print_new=False,
+                )
+                _run(ns_r)
+                _refresh()
+                return
+            ns_e = _argparse.Namespace(
+                cmd="identity", action="edit", name=name,
+                handle=payload.get("handle"),
+                email=payload.get("email"),
+                recovery=payload.get("recovery"),
+                recovery_email=payload.get("recovery_email"),
+                recovery_codes=payload.get("recovery_codes"),
+                recovery_codes_replace=False,
+                display_name=payload.get("display_name"),
+                notes=payload.get("notes"),
+            )
+            rc, _o, err = _run(ns_e)
+            if rc != 0:
+                messagebox.showerror(
+                    "darkcat — capture", _last_error_line(err),
+                    parent=dlg,
+                )
+            _refresh()
+
+        def _edit_selected() -> None:
+            name = _selected_name()
+            if not name:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Select a row first, then click 'Edit' to update its "
+                    "credentials.",
+                    parent=dlg,
+                )
+                return
+            vault = state["vault"]
+            if vault is None:
+                return
+            p = vault.inner.get(name)
+            if p is None:
+                messagebox.showerror(
+                    "darkcat — edit",
+                    f"{name!r} is no longer in the vault.",
+                    parent=dlg,
+                )
+                _refresh()
+                return
+            payload = self._open_identity_edit_dialog(dlg, p)
+            if payload is None:
+                return
+            action = payload.pop("_action", "edit")
+            if action == "rotate-password":
+                ns = _argparse.Namespace(
+                    cmd="identity", action="rotate-password",
+                    name=name, length=24, print_new=False,
+                )
+                rc, out, err = _run(ns)
+                if rc == 0:
+                    messagebox.showinfo(
+                        "darkcat — password rotated",
+                        out + "\nUse 'identity show --reveal' from the CLI "
+                        "to retrieve the new password.",
+                        parent=dlg,
+                    )
+                else:
+                    messagebox.showerror(
+                        "darkcat — rotate", _last_error_line(err),
+                        parent=dlg,
+                    )
+                _refresh()
+                return
+            ns = _argparse.Namespace(
+                cmd="identity", action="edit", name=name,
+                handle=payload.get("handle"),
+                email=payload.get("email"),
+                recovery=payload.get("recovery"),
+                recovery_email=payload.get("recovery_email"),
+                recovery_codes=payload.get("recovery_codes"),
+                recovery_codes_replace=False,
+                display_name=payload.get("display_name"),
+                notes=payload.get("notes"),
+            )
+            rc, out, err = _run(ns)
+            if rc == 0:
+                messagebox.showinfo(
+                    "darkcat — identity updated", out, parent=dlg,
+                )
+            else:
+                messagebox.showerror(
+                    "darkcat — edit", _last_error_line(err),
+                    parent=dlg,
+                )
+            _refresh()
+
+        def _show_selected() -> None:
+            name = _selected_name()
+            if not name:
+                messagebox.showinfo(
+                    "darkcat — identity",
+                    "Select a row first, then click 'Show' to view its "
+                    "credentials.",
+                    parent=dlg,
+                )
+                return
+            if state["vault"] is None:
+                return
+            reveal = self._open_confirm_reveal_dialog(dlg, name)
+            ns = _argparse.Namespace(
+                cmd="identity", action="show", name=name,
+                reveal=reveal, json=False,
+            )
+            rc, out, err = _run(ns)
+            if rc != 0:
+                messagebox.showerror(
+                    "darkcat — show", _last_error_line(err),
+                    parent=dlg,
+                )
+                return
+            title = (f"{name} (revealed — handle with care)"
+                     if reveal else
+                     f"{name} (masked — click Show again to reveal)")
+            self._open_result_dialog(dlg, title, out or "(no data)")
+
+        def _link_or_unlink(verb: str) -> None:
+            def _go() -> None:
+                v = state["vault"]
+                if v is None:
+                    return
+                names = [
+                    p.name for p in v.inner.personas
+                    if p.provider  # identity rows only
+                ]
+                if len(names) < 2:
+                    messagebox.showinfo(
+                        f"darkcat — {verb}",
+                        "Need at least two identities in the vault first.",
+                        parent=dlg,
+                    )
+                    return
+                payload = self._open_link_dialog(
+                    dlg, names,
+                    default_child=_selected_name(),
+                    verb=verb.capitalize(),
+                )
+                if payload is None:
+                    return
+                ns = _argparse.Namespace(
+                    cmd="identity", action=verb,
+                    parent=payload["parent"], child=payload["child"],
+                )
+                rc, _out, err = _run(ns)
+                if rc != 0:
+                    messagebox.showerror(
+                        f"darkcat — {verb}", _last_error_line(err),
+                        parent=dlg,
+                    )
+                else:
+                    messagebox.showinfo(
+                        f"darkcat — {verb}",
+                        f"{verb}ed {payload['parent']} → {payload['child']}",
+                        parent=dlg,
+                    )
+            _unlock_then(_go)
+
+        def _link_selected() -> None:
+            _link_or_unlink("link")
+
+        def _unlink_selected() -> None:
+            _link_or_unlink("unlink")
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="New",            command=_new_identity,     style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Launch signup",  command=_launch_selected,  style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Show",           command=_show_selected,    style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Confirm",        command=_confirm_selected, style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Edit",           command=_edit_selected,    style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Link",           command=_link_selected,    style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Unlink",         command=_unlink_selected,  style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Burn",           command=_burn_selected,    style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Refresh",        command=_refresh,          style="Run.TButton").pack(side="left", padx=6)
+        ttk.Button(btns, text="Close",          command=dlg.destroy,       style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.focus_set()
+        _unlock_then(_refresh)
+
+    def _open_passphrase_dialog(
+        self, parent: tk.Toplevel, prompt: str = "Vault passphrase",
+    ) -> Optional[str]:
+        """Modal passphrase prompt for an encrypted vault. Returns the
+        typed string on submit, or ``None`` on cancel. Used by the
+        identity browser to gate access to vault.gpg without forcing
+        the operator out to the CLI."""
+        dlg = tk.Toplevel(parent)
+        dlg.title("darkcat — vault passphrase")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 380) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 180) // 3)
+            dlg.geometry(f"380x180+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("380x180")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text=prompt,
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(body, text="Passphrase", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        pw_var = tk.StringVar()
+        entry = tk.Entry(
+            body, textvariable=pw_var, show="*",
+            bg=PANEL_BG, fg=NEON_GREEN,
+            insertbackground=NEON_GREEN,
+            relief="flat", font=(self._mono, 11),
+        )
+        entry.pack(fill="x", pady=(2, 10))
+
+        result: dict = {"value": None}
+
+        def _submit(_e=None) -> None:
+            v = pw_var.get()
+            if not v:
+                return
+            result["value"] = v
+            dlg.destroy()
+
+        def _cancel(_e=None) -> None:
+            result["value"] = None
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Unlock", command=_submit,
+                   style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Cancel", command=_cancel,
+                   style="Run.TButton").pack(side="left", padx=6)
+
+        dlg.bind("<Return>", _submit)
+        dlg.bind("<Escape>", _cancel)
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        entry.focus_set()
+        parent.wait_window(dlg)
+        return result["value"]
+
+    def _open_result_dialog(
+        self, parent: tk.Toplevel, title: str, body: str,
+    ) -> None:
+        """Scrollable read-only dump of captured CLI stdout — used after
+        ``show`` / ``launch`` so multi-line tables and revealed secrets
+        survive intact rather than being truncated to a messagebox."""
+        dlg = tk.Toplevel(parent)
+        dlg.title(f"darkcat — {title}")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 720) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 460) // 3)
+            dlg.geometry(f"720x460+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("720x460")
+
+        frame = tk.Frame(dlg, bg=DEEP_BG, padx=14, pady=12)
+        frame.pack(fill="both", expand=True)
+
+        tk.Label(
+            frame, text=title,
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        text_frame = tk.Frame(frame, bg=DEEP_BG)
+        text_frame.pack(fill="both", expand=True)
+        text = tk.Text(
+            text_frame, wrap="none",
+            bg=PANEL_BG, fg=NEON_GREEN,
+            insertbackground=NEON_GREEN,
+            relief="flat", font=(self._mono, 10),
+        )
+        ysb = ttk.Scrollbar(text_frame, orient="vertical",
+                            command=text.yview)
+        xsb = ttk.Scrollbar(text_frame, orient="horizontal",
+                            command=text.xview)
+        text.configure(yscrollcommand=ysb.set, xscrollcommand=xsb.set)
+        text.grid(row=0, column=0, sticky="nsew")
+        ysb.grid(row=0, column=1, sticky="ns")
+        xsb.grid(row=1, column=0, sticky="ew")
+        text_frame.rowconfigure(0, weight=1)
+        text_frame.columnconfigure(0, weight=1)
+        text.insert("1.0", body or "(no output)")
+        text.configure(state="disabled")
+
+        btns = tk.Frame(frame, bg=DEEP_BG)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="Close", command=dlg.destroy,
+                   style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.focus_set()
+        parent.wait_window(dlg)
+
+    def _open_confirm_reveal_dialog(
+        self, parent: tk.Toplevel, name: str,
+    ) -> bool:
+        """Two-button modal: ``Reveal`` shows the password + recovery
+        codes in plaintext, ``Masked`` keeps them dotted. Closing the
+        window is treated as ``Masked`` — never accidentally reveal."""
+        dlg = tk.Toplevel(parent)
+        dlg.title("darkcat — show identity")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 420) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 200) // 3)
+            dlg.geometry(f"420x200+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("420x200")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text=f"Show {name}",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 6))
+        tk.Label(
+            body,
+            text=("Reveal password and recovery codes in plaintext on "
+                  "screen? Choose 'Masked' if anyone is shoulder-surfing."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=380, justify="left",
+        ).pack(anchor="w", pady=(0, 10))
+
+        result: dict = {"value": False}
+
+        def _reveal() -> None:
+            result["value"] = True
+            dlg.destroy()
+
+        def _masked() -> None:
+            result["value"] = False
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Masked", command=_masked,
+                   style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Reveal", command=_reveal,
+                   style="Run.TButton").pack(side="left", padx=6)
+
+        dlg.bind("<Escape>", lambda _e: _masked())
+        dlg.bind("<y>",      lambda _e: _reveal())
+        dlg.bind("<n>",      lambda _e: _masked())
+        dlg.protocol("WM_DELETE_WINDOW", _masked)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.focus_set()
+        parent.wait_window(dlg)
+        return result["value"]
+
+    def _open_link_dialog(
+        self, parent: tk.Toplevel, names: list,
+        default_child: Optional[str] = None, verb: str = "Link",
+    ) -> Optional[dict]:
+        """Sub-modal: pick parent + child personas for link / unlink.
+
+        Returns ``{'parent', 'child'}`` on submit, ``None`` on cancel.
+        Parent = the recovery account (ProtonMail, etc.); child = the
+        protected one (Reddit, etc.). Errors out on identical picks."""
+        dlg = tk.Toplevel(parent)
+        dlg.title(f"darkcat — {verb.lower()} identities")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 460) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 260) // 3)
+            dlg.geometry(f"460x260+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("460x260")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text=f"{verb} identities",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        tk.Label(
+            body,
+            text=("Parent = the recovery account (e.g. ProtonMail). "
+                  "Child = the protected one (e.g. Reddit)."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=420, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(body, text="Parent", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        parent_var = tk.StringVar(value=names[0] if names else "")
+        parent_box = ttk.Combobox(
+            body, textvariable=parent_var, values=list(names),
+            state="readonly",
+        )
+        parent_box.pack(fill="x", pady=(2, 8))
+
+        tk.Label(body, text="Child", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        child_default = default_child if default_child in names else (
+            names[1] if len(names) > 1 else (names[0] if names else "")
+        )
+        child_var = tk.StringVar(value=child_default)
+        child_box = ttk.Combobox(
+            body, textvariable=child_var, values=list(names),
+            state="readonly",
+        )
+        child_box.pack(fill="x", pady=(2, 10))
+
+        result: dict = {"value": None}
+
+        def _submit() -> None:
+            par = parent_var.get()
+            ch = child_var.get()
+            if not par or not ch or par == ch:
+                messagebox.showerror(
+                    "darkcat — " + verb.lower(),
+                    "Pick two different identities.",
+                    parent=dlg,
+                )
+                return
+            result["value"] = {"parent": par, "child": ch}
+            dlg.destroy()
+
+        def _cancel() -> None:
+            result["value"] = None
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text=verb, command=_submit,
+                   style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Cancel", command=_cancel,
+                   style="Run.TButton").pack(side="left", padx=6)
+
+        dlg.bind("<Return>", lambda _e: _submit())
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.focus_set()
+        parent.wait_window(dlg)
+        return result["value"]
+
+    def _open_identity_new_dialog(
+        self, parent: tk.Toplevel,
+    ) -> Optional[dict]:
+        """Sub-modal collecting provider / instance / transport / purpose.
+
+        Returns ``{'provider', 'instance', 'transport', 'purpose'}`` on
+        submit (``instance`` may be ``None`` for single-host providers),
+        or ``None`` on cancel. Blocks until dismissed (Tk ``wait_window``).
+        """
+        from darkcat.identity import providers as provreg
+        provreg.load_all()
+        provider_rows = sorted(provreg.registered(), key=lambda x: x.slug)
+        provider_labels = [
+            f"{p.slug} — {p.display_name} ({p.category})"
+            for p in provider_rows
+        ]
+        profiles_by_slug = {p.slug: p for p in provider_rows}
+
+        dlg = tk.Toplevel(parent)
+        dlg.title("darkcat — new identity")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 460) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 330) // 3)
+            dlg.geometry(f"460x330+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("460x330")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="New identity",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 8))
+
+        tk.Label(body, text="Provider", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        provider_var = tk.StringVar(value=provider_labels[0] if provider_labels else "")
+        provider_box = ttk.Combobox(
+            body, textvariable=provider_var, values=provider_labels,
+            state="readonly",
+        )
+        provider_box.pack(fill="x", pady=(0, 6))
+
+        tk.Label(body, text="Instance (host)", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        instance_var = tk.StringVar(value="(provider default)")
+        instance_box = ttk.Combobox(
+            body, textvariable=instance_var,
+            values=["(provider default)"], state="readonly",
+        )
+        instance_box.pack(fill="x", pady=(0, 6))
+
+        def _slug_from_label(label: str) -> str:
+            return label.split(" — ", 1)[0] if " — " in label else label
+
+        def _refresh_instances(*_args) -> None:
+            slug = _slug_from_label(provider_var.get())
+            prof = profiles_by_slug.get(slug)
+            if prof is None or not prof.instances:
+                instance_box.configure(values=["(provider default / N/A)"])
+                instance_var.set("(provider default / N/A)")
+                return
+            opts = ["(provider default)"]
+            for suffix, _url, note in prof.instances:
+                label = f"{suffix} — {note}" if note else suffix
+                opts.append(label)
+            instance_box.configure(values=opts)
+            instance_var.set(opts[0])
+
+        provider_box.bind("<<ComboboxSelected>>", _refresh_instances)
+        _refresh_instances()
+
+        tk.Label(body, text="Transport", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        transport_var = tk.StringVar(value="tor")
+        ttk.Combobox(
+            body, textvariable=transport_var,
+            values=["tor", "i2p", "proxy"], state="readonly",
+        ).pack(fill="x", pady=(0, 6))
+
+        tk.Label(body, text="Purpose tag (optional)", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        purpose_var = tk.StringVar(value="")
+        tk.Entry(
+            body, textvariable=purpose_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        ).pack(fill="x", pady=(0, 10))
+
+        result: dict[str, Optional[str]] = {}
+
+        def _submit() -> None:
+            slug = _slug_from_label(provider_var.get())
+            if not slug:
+                return
+            inst_label = instance_var.get()
+            instance: Optional[str]
+            if inst_label.startswith("(provider default"):
+                instance = None
+            else:
+                instance = inst_label.split(" — ", 1)[0]
+            result["provider"]  = slug
+            result["instance"]  = instance
+            result["transport"] = transport_var.get() or "tor"
+            result["purpose"]   = purpose_var.get().strip() or None
+            dlg.destroy()
+
+        def _cancel() -> None:
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x", pady=(4, 0))
+        ttk.Button(btns, text="Create", command=_submit, style="Run.TButton").pack(side="left")
+        ttk.Button(btns, text="Cancel", command=_cancel, style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Return>", lambda _e: _submit())
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        provider_box.focus_set()
+        parent.wait_window(dlg)
+
+        if "provider" not in result:
+            return None
+        return result
+
+    def _open_identity_edit_dialog(
+        self, parent: tk.Toplevel, persona,
+    ) -> Optional[dict]:
+        """Sub-modal that edits credential fields on an existing identity.
+
+        Returns ``None`` on cancel. On submit, returns a dict whose keys
+        line up 1:1 with ``identity edit`` CLI flags — only fields whose
+        value actually changed are included. A ``Rotate password`` button
+        short-circuits with ``{'_action': 'rotate-password'}`` so the
+        caller can dispatch to the rotate-password handler instead.
+        """
+        dlg = tk.Toplevel(parent)
+        dlg.title(f"darkcat — edit {persona.name}")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(parent)
+        dlg.resizable(False, False)
+        try:
+            parent.update_idletasks()
+            px = parent.winfo_rootx() + max(0, (parent.winfo_width() - 520) // 2)
+            py = parent.winfo_rooty() + max(0, (parent.winfo_height() - 480) // 3)
+            dlg.geometry(f"520x480+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("520x480")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text=f"Edit credentials — {persona.name}",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 12, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        tk.Label(
+            body,
+            text=("Leave a field unchanged to keep its current value. "
+                  "Empty strings clear optional fields. New recovery codes "
+                  "are appended (comma-separated)."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=480, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        def _field(label: str, initial: str, show: Optional[str] = None):
+            tk.Label(body, text=label, fg=DIM_FG, bg=DEEP_BG,
+                     font=(self._mono, 9)).pack(anchor="w")
+            var = tk.StringVar(value=initial or "")
+            kwargs = dict(
+                textvariable=var,
+                bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+                relief="flat", highlightthickness=1,
+                highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+            )
+            if show is not None:
+                kwargs["show"] = show
+            tk.Entry(body, **kwargs).pack(fill="x", pady=(0, 4))
+            return var
+
+        handle_var         = _field("Handle / username", persona.handle or "")
+        email_var          = _field("Email", persona.email or "")
+        recovery_email_var = _field("Recovery email", persona.recovery_email or "")
+        display_name_var   = _field("Display name", persona.display_name or "")
+        recovery_var       = _field("Recovery phrase / BIP-39", persona.recovery or "", show="*")
+        codes_var          = _field(
+            f"Add recovery codes (current: {len(persona.recovery_codes)}) — "
+            "comma-separated",
+            "",
+        )
+        notes_var          = _field("Notes", persona.notes or "")
+
+        result: dict[str, object] = {}
+
+        def _submit() -> None:
+            def _diff(var, current):
+                cur = current or ""
+                new = var.get()
+                return new if new != cur else None
+
+            changes: dict[str, object] = {"_action": "edit"}
+            v = _diff(handle_var, persona.handle)
+            if v is not None: changes["handle"] = v
+            v = _diff(email_var, persona.email)
+            if v is not None: changes["email"] = v
+            v = _diff(recovery_email_var, persona.recovery_email)
+            if v is not None: changes["recovery_email"] = v
+            v = _diff(display_name_var, persona.display_name)
+            if v is not None: changes["display_name"] = v
+            v = _diff(recovery_var, persona.recovery)
+            if v is not None: changes["recovery"] = v
+            v = _diff(notes_var, persona.notes)
+            if v is not None: changes["notes"] = v
+            codes_raw = codes_var.get().strip()
+            if codes_raw:
+                changes["recovery_codes"] = [
+                    c.strip() for c in codes_raw.split(",") if c.strip()
+                ]
+            if len(changes) == 1:
+                # Nothing changed apart from the action marker.
+                dlg.destroy()
+                return
+            result.update(changes)
+            dlg.destroy()
+
+        def _rotate() -> None:
+            result["_action"] = "rotate-password"
+            dlg.destroy()
+
+        def _cancel() -> None:
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x", pady=(8, 0))
+        ttk.Button(btns, text="Save",            command=_submit, style="Run.TButton").pack(side="left")
+        ttk.Button(btns, text="Rotate password", command=_rotate, style="Run.TButton").pack(side="left", padx=(8, 0))
+        ttk.Button(btns, text="Cancel",          command=_cancel, style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Return>", lambda _e: _submit())
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        dlg.focus_set()
+        parent.wait_window(dlg)
+
+        if not result:
+            return None
+        return result
+
+    def _show_persona_add(self) -> None:
+        """Modal 'Add mail persona' dialog with mail-provider preset picker.
+
+        Wraps ``personas add NAME --mail-provider SLUG`` so an operator
+        can drop in a Disroot / Mailfence / Proton-Bridge persona without
+        memorising SMTP/IMAP host:port/TLS. Any explicit field they fill
+        still wins over the preset (matches the CLI handler precedence).
+        """
+        import argparse as _argparse
+        from darkcat import mail_providers as _mp
+        from darkcat.identity import invoke_cli_capturing
+
+        presets = _mp.all_presets()
+        if not presets:
+            messagebox.showerror(
+                "darkcat — add persona",
+                "No mail-provider presets registered.",
+                parent=self.root,
+            )
+            return
+        # "(none)" lets the operator fill site/notes manually if their
+        # provider isn't in the curated list.
+        preset_labels = ["(none — fill manually)"] + [
+            f"{p.slug} — {p.description.split(';')[0]}"
+            for p in presets
+        ]
+        preset_by_label = {preset_labels[0]: None}
+        for label, p in zip(preset_labels[1:], presets):
+            preset_by_label[label] = p
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("darkcat — add mail persona")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        try:
+            self.root.update_idletasks()
+            px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 560) // 2)
+            py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 520) // 3)
+            dlg.geometry(f"560x520+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("560x520")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="Add mail persona",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+        tk.Label(
+            body,
+            text=("Pick a mail-provider preset and the SMTP/IMAP host, "
+                  "port and TLS mode are filled in for you. Any field "
+                  "you override still wins over the preset."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=520, justify="left",
+        ).pack(anchor="w", pady=(0, 8))
+
+        def _field(label_text: str, *, password: bool = False,
+                   default: str = "") -> tk.Entry:
+            tk.Label(body, text=label_text, fg=DIM_FG, bg=DEEP_BG,
+                     font=(self._mono, 9)).pack(anchor="w")
+            var = tk.StringVar(value=default)
+            kwargs = {"show": "*"} if password else {}
+            entry = tk.Entry(
+                body, textvariable=var,
+                bg=PANEL_BG, fg=NEON_GREEN,
+                insertbackground=NEON_GREEN,
+                relief="flat", font=(self._mono, 10),
+                **kwargs,
+            )
+            entry.pack(fill="x", pady=(2, 6))
+            entry._dc_var = var  # type: ignore[attr-defined]
+            return entry
+
+        name_entry = _field("Name (unique persona id)")
+
+        tk.Label(body, text="Mail provider", fg=DIM_FG, bg=DEEP_BG,
+                 font=(self._mono, 9)).pack(anchor="w")
+        preset_var = tk.StringVar(value=preset_labels[0])
+        preset_box = ttk.Combobox(
+            body, textvariable=preset_var, values=preset_labels,
+            state="readonly",
+        )
+        preset_box.pack(fill="x", pady=(2, 6))
+
+        handle_entry = _field("Handle (e.g. alice@disroot.org)")
+        email_entry = _field("Email (optional)")
+        password_entry = _field("Password (leave blank to autogenerate)",
+                                password=True)
+        network_entry = _field("Network override (optional)")
+        site_entry = _field("Site override (optional — e.g. host:port)")
+        notes_entry = _field("Notes override (optional)")
+
+        gen_var = tk.BooleanVar(value=True)
+        gen_chk = tk.Checkbutton(
+            body, text="Auto-generate handle / password if blank",
+            variable=gen_var,
+            bg=DEEP_BG, fg=NEON_GREEN, selectcolor=PANEL_BG,
+            activebackground=DEEP_BG, activeforeground=NEON_PINK,
+            font=(self._mono, 9), borderwidth=0, highlightthickness=0,
+        )
+        gen_chk.pack(anchor="w", pady=(0, 8))
+
+        def _on_preset_change(_e=None) -> None:
+            label = preset_var.get()
+            preset = preset_by_label.get(label)
+            hint = ""
+            if preset is not None and preset.handle_hint:
+                hint = preset.handle_hint
+            # Show the hint as a placeholder-style nudge in handle field
+            # only when the field is empty (don't clobber operator input).
+            if hint and not handle_entry._dc_var.get():  # type: ignore[attr-defined]
+                # Stash the hint in the entry's tooltip-like state.
+                pass
+
+        preset_box.bind("<<ComboboxSelected>>", _on_preset_change)
+
+        def _submit() -> None:
+            name = name_entry._dc_var.get().strip()  # type: ignore[attr-defined]
+            if not name:
+                messagebox.showerror(
+                    "darkcat — add persona",
+                    "Persona name is required.",
+                    parent=dlg,
+                )
+                return
+            preset = preset_by_label.get(preset_var.get())
+            ns = _argparse.Namespace(
+                cmd="personas", action="add",
+                name=name,
+                network=network_entry._dc_var.get() or "",  # type: ignore[attr-defined]
+                site=site_entry._dc_var.get() or "",  # type: ignore[attr-defined]
+                handle=handle_entry._dc_var.get() or None,  # type: ignore[attr-defined]
+                password=password_entry._dc_var.get() or None,  # type: ignore[attr-defined]
+                email=email_entry._dc_var.get() or None,  # type: ignore[attr-defined]
+                pgp_key_id=None,
+                recovery=None,
+                notes=notes_entry._dc_var.get() or None,  # type: ignore[attr-defined]
+                user_agent=None,
+                proxy=None,
+                tags=[],
+                gen=gen_var.get(),
+                replace=False,
+                mail_provider=preset.slug if preset else None,
+            )
+            try:
+                rc, out, err = invoke_cli_capturing(self.cfg, ns)
+            except SystemExit as e:
+                rc = int(e.code) if isinstance(e.code, int) else 2
+                out, err = "", ""
+            except Exception as e:
+                rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+            if rc == 0:
+                messagebox.showinfo(
+                    "darkcat — persona added",
+                    out + ("\nWire it up via "
+                           "'Mail console… → Send' afterwards."),
+                    parent=dlg,
+                )
+                dlg.destroy()
+            else:
+                last = err.splitlines()[-1].strip() if err.strip() else "failed"
+                messagebox.showerror("darkcat — add persona",
+                                     last, parent=dlg)
+
+        def _cancel() -> None:
+            dlg.destroy()
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x", pady=(4, 0))
+        ttk.Button(btns, text="Add", command=_submit,
+                   style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Cancel", command=_cancel,
+                   style="Run.TButton").pack(side="left", padx=6)
+
+        dlg.bind("<Return>", lambda _e: _submit())
+        dlg.bind("<Escape>", lambda _e: _cancel())
+        dlg.protocol("WM_DELETE_WINDOW", _cancel)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        name_entry.focus_set()
+
+    def _show_chat(self) -> None:
+        """Modal Chat-console dialog mirroring the TUI ChatScreen.
+
+        Pick a persona, action, target / channel id / invite link / peer
+        id, plus a body. Run dispatches into ``cmd_chat`` via
+        ``invoke_cli_capturing`` and renders the result in a scrolling
+        log so multi-line tables survive intact.
+        """
+        import argparse as _argparse
+
+        from darkcat import personas as pv
+        from darkcat.identity import invoke_cli_capturing
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("darkcat — chat")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(self.root)
+        try:
+            self.root.update_idletasks()
+            px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 820) // 2)
+            py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 620) // 3)
+            dlg.geometry(f"820x620+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("820x620")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=16, pady=12)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="Chat console",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        tk.Label(
+            body,
+            text=("Run any darkcat chat action against a persona. "
+                  "Output of the underlying CLI command appears below."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=780, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        # Quick-action preset buttons. Each one sets the Network + Action
+        # dropdowns below so the operator doesn't have to remember which
+        # CLI verb each network uses. Defined here as a list of tuples so
+        # the row can be regenerated trivially if the set changes.
+        # Shape: (label, network ('' = persona default), action, hint).
+        _presets = [
+            ("Telegram Join",  "telegram", "join",
+             "expects @channel | https://t.me/+invite | numeric id"),
+            ("Telegram Leave", "telegram", "leave",
+             "expects numeric channel id"),
+            ("Add Session",    "session",  "addcontact",
+             "expects 66-hex Session ID; body = optional nickname"),
+            ("Accept SimpleX", "simplex",  "connect",
+             "expects https://simplex.chat/contact#... or simplex:/..."),
+            ("Login",          "",         "login",
+             "no target needed; press Run"),
+            ("List",           "",         "list",
+             "no target needed; press Run"),
+            ("Backends",       "",         "backends",
+             "no target needed; press Run"),
+        ]
+        presets_row = tk.Frame(body, bg=DEEP_BG)
+        presets_row.pack(fill="x", pady=(0, 8))
+
+        # Persona dropdown sourced from the vault; falls back to a free-
+        # form entry when the vault is encrypted or unreadable.
+        persona_names: list[str] = []
+        try:
+            path = pv.vault_path()
+            if path.exists() and path.suffix != ".gpg":
+                v = pv.Vault(path=path)
+                persona_names = [p.name for p in v.personas]
+        except Exception:
+            pass
+
+        form = tk.Frame(body, bg=DEEP_BG)
+        form.pack(fill="x", pady=(4, 0))
+
+        def _row(label: str, widget):
+            row = tk.Frame(form, bg=DEEP_BG)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, fg=DIM_FG, bg=DEEP_BG,
+                     font=(self._mono, 9), width=14, anchor="w").pack(side="left")
+            widget.pack(side="left", fill="x", expand=True)
+            return widget
+
+        persona_var = tk.StringVar(value=persona_names[0] if persona_names else "")
+        if persona_names:
+            persona_w = ttk.Combobox(
+                form, textvariable=persona_var, values=persona_names,
+                state="readonly",
+            )
+        else:
+            persona_w = tk.Entry(
+                form, textvariable=persona_var,
+                bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+                relief="flat", highlightthickness=1,
+                highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+            )
+        _row("Persona", persona_w)
+
+        network_var = tk.StringVar(value="(persona default)")
+        network_w = ttk.Combobox(
+            form, textvariable=network_var, state="readonly",
+            values=["(persona default)", "telegram", "matrix", "xmpp",
+                    "simplex", "session"],
+        )
+        _row("Network", network_w)
+
+        action_var = tk.StringVar(value="list")
+        action_w = ttk.Combobox(
+            form, textvariable=action_var, state="readonly",
+            values=["backends", "login", "list", "read", "send", "ingest",
+                    "join", "leave", "connect", "addcontact"],
+        )
+        _row("Action", action_w)
+
+        target_var = tk.StringVar(value="")
+        target_w = tk.Entry(
+            form, textvariable=target_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("Target / id", target_w)
+
+        body_var = tk.StringVar(value="")
+        body_w = tk.Entry(
+            form, textvariable=body_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("Body / limit", body_w)
+
+        tk.Label(
+            body,
+            text=("Target: @channel | -100… group id | direct:42 | "
+                  "05<hex> | https://t.me/+… | invite link. "
+                  "Body field doubles as N for read/ingest and "
+                  "as the local nickname for addcontact."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 8),
+            wraplength=780, justify="left",
+        ).pack(anchor="w", pady=(6, 2))
+
+        log = tk.Text(
+            body, height=14, bg=PANEL_BG, fg=NEON_GREEN,
+            insertbackground=NEON_GREEN, relief="flat",
+            font=(self._mono, 9), highlightthickness=1,
+            highlightbackground=DARK_GREEN,
+        )
+        log.pack(fill="both", expand=True, pady=(6, 6))
+        log.configure(state="disabled")
+
+        def _log(msg: str) -> None:
+            log.configure(state="normal")
+            log.insert("end", msg.rstrip() + "\n")
+            log.see("end")
+            log.configure(state="disabled")
+
+        def _apply_preset(net: str, act: str, hint: str) -> None:
+            """Pre-fill Network + Action dropdowns from one click and
+            print a one-line hint about what target value to type next."""
+            network_var.set(net if net else "(persona default)")
+            action_var.set(act)
+            if hint:
+                _log(f"hint: {hint}")
+            if act not in ("login", "list", "backends"):
+                target_w.focus_set()
+
+        for plabel, pnet, pact, phint in _presets:
+            ttk.Button(
+                presets_row, text=plabel, style="Run.TButton",
+                command=lambda n=pnet, a=pact, h=phint: _apply_preset(n, a, h),
+            ).pack(side="left", padx=2)
+
+        def _run() -> None:
+            persona = persona_var.get().strip()
+            action = action_var.get()
+            nw = network_var.get()
+            network = None if nw == "(persona default)" else nw
+            target = target_var.get().strip()
+            body_str = body_var.get().strip()
+
+            if not persona and action != "backends":
+                _log("error: persona is required")
+                return
+
+            ns_kwargs: dict = {"cmd": "chat", "action": action,
+                               "persona": persona, "network": network,
+                               "json": False}
+            if action == "list":
+                ns_kwargs["limit"] = 100
+            elif action == "read":
+                try:
+                    ns_kwargs["limit"] = int(body_str) if body_str else 30
+                except ValueError:
+                    ns_kwargs["limit"] = 30
+                ns_kwargs["channel_id"] = target
+            elif action == "send":
+                ns_kwargs["channel_id"] = target
+                ns_kwargs["message"] = body_str
+            elif action == "ingest":
+                try:
+                    ns_kwargs["limit"] = int(body_str) if body_str else 200
+                except ValueError:
+                    ns_kwargs["limit"] = 200
+                ns_kwargs["channel_id"] = target
+            elif action == "join":
+                ns_kwargs["target"] = target
+            elif action == "leave":
+                ns_kwargs["channel_id"] = target
+            elif action == "connect":
+                ns_kwargs["invite_link"] = target
+            elif action == "addcontact":
+                ns_kwargs["peer_session_id"] = target
+                ns_kwargs["name"] = body_str or None
+
+            ns = _argparse.Namespace(**ns_kwargs)
+            try:
+                rc, out, err = invoke_cli_capturing(self.cfg, ns)
+            except SystemExit as e:
+                rc = int(e.code) if isinstance(e.code, int) else 2
+                out, err = "", ""
+            except Exception as e:
+                rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+            if out:
+                _log(out)
+            if err:
+                _log(err)
+            _log(f"-- exit {rc} --")
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Run",   command=_run,         style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Close", command=dlg.destroy,  style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        persona_w.focus_set()
+
+    def _show_mail(self) -> None:
+        """Modal Mail-console dialog mirroring the TUI MailScreen.
+
+        Send a plain-text message or list recent INBOX headers for the
+        chosen persona. The persona must carry SMTP/IMAP coordinates —
+        see `darkcat mail --help` for the persona shape.
+        """
+        import argparse as _argparse
+
+        from darkcat import personas as pv
+        from darkcat.identity import invoke_cli_capturing
+
+        dlg = tk.Toplevel(self.root)
+        dlg.title("darkcat — mail")
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(self.root)
+        try:
+            self.root.update_idletasks()
+            px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 820) // 2)
+            py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 580) // 3)
+            dlg.geometry(f"820x580+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("820x580")
+
+        body = tk.Frame(dlg, bg=DEEP_BG, padx=16, pady=12)
+        body.pack(fill="both", expand=True)
+
+        tk.Label(
+            body, text="Mail console",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(anchor="w", pady=(0, 4))
+
+        tk.Label(
+            body,
+            text=("Send plain-text email or list recent INBOX headers. "
+                  "The persona must carry SMTP/IMAP credentials (see "
+                  "`darkcat mail --help`)."),
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9),
+            wraplength=780, justify="left",
+        ).pack(anchor="w", pady=(0, 6))
+
+        persona_names: list[str] = []
+        try:
+            path = pv.vault_path()
+            if path.exists() and path.suffix != ".gpg":
+                v = pv.Vault(path=path)
+                persona_names = [p.name for p in v.personas]
+        except Exception:
+            pass
+
+        form = tk.Frame(body, bg=DEEP_BG)
+        form.pack(fill="x", pady=(4, 0))
+
+        def _row(label: str, widget):
+            row = tk.Frame(form, bg=DEEP_BG)
+            row.pack(fill="x", pady=2)
+            tk.Label(row, text=label, fg=DIM_FG, bg=DEEP_BG,
+                     font=(self._mono, 9), width=14, anchor="w").pack(side="left")
+            widget.pack(side="left", fill="x", expand=True)
+            return widget
+
+        persona_var = tk.StringVar(value=persona_names[0] if persona_names else "")
+        if persona_names:
+            persona_w = ttk.Combobox(
+                form, textvariable=persona_var, values=persona_names,
+                state="readonly",
+            )
+        else:
+            persona_w = tk.Entry(
+                form, textvariable=persona_var,
+                bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+                relief="flat", highlightthickness=1,
+                highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+            )
+        _row("Persona", persona_w)
+
+        action_var = tk.StringVar(value="send")
+        action_w = ttk.Combobox(
+            form, textvariable=action_var, state="readonly",
+            values=["send", "check"],
+        )
+        _row("Action", action_w)
+
+        to_var = tk.StringVar(value="")
+        to_w = tk.Entry(
+            form, textvariable=to_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("To (csv)", to_w)
+
+        subj_var = tk.StringVar(value="")
+        subj_w = tk.Entry(
+            form, textvariable=subj_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", highlightthickness=1,
+            highlightbackground=DARK_GREEN, highlightcolor=NEON_CYAN,
+        )
+        _row("Subject/folder", subj_w)
+
+        tk.Label(body, text="Body (send) / limit number (check)",
+                 fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 9)).pack(
+            anchor="w", pady=(8, 2))
+        body_text = tk.Text(
+            body, height=6, bg=PANEL_BG, fg=NEON_GREEN,
+            insertbackground=NEON_GREEN, relief="flat",
+            font=(self._mono, 9), highlightthickness=1,
+            highlightbackground=DARK_GREEN,
+        )
+        body_text.pack(fill="x")
+
+        log = tk.Text(
+            body, height=10, bg=PANEL_BG, fg=NEON_GREEN,
+            insertbackground=NEON_GREEN, relief="flat",
+            font=(self._mono, 9), highlightthickness=1,
+            highlightbackground=DARK_GREEN,
+        )
+        log.pack(fill="both", expand=True, pady=(6, 6))
+        log.configure(state="disabled")
+
+        def _log(msg: str) -> None:
+            log.configure(state="normal")
+            log.insert("end", msg.rstrip() + "\n")
+            log.see("end")
+            log.configure(state="disabled")
+
+        def _run() -> None:
+            persona = persona_var.get().strip()
+            action = action_var.get()
+            to_raw = to_var.get().strip()
+            subj = subj_var.get().strip()
+            body_str = body_text.get("1.0", "end").strip()
+            if not persona:
+                _log("error: persona is required")
+                return
+
+            if action == "send":
+                recipients = [s.strip() for s in to_raw.split(",") if s.strip()]
+                if not recipients or not subj or not body_str:
+                    _log("error: need to, subject, body")
+                    return
+                ns = _argparse.Namespace(
+                    cmd="mail", action="send", persona=persona,
+                    to=recipients, cc=None, bcc=None, reply_to=None,
+                    subject=subj, body=body_str, body_file=None,
+                    timeout=30.0,
+                )
+            else:
+                try:
+                    limit = int(body_str) if body_str else 25
+                except ValueError:
+                    limit = 25
+                ns = _argparse.Namespace(
+                    cmd="mail", action="check", persona=persona,
+                    folder=subj or "INBOX", limit=limit, timeout=30.0,
+                    json=False,
+                )
+
+            try:
+                rc, out, err = invoke_cli_capturing(self.cfg, ns)
+            except SystemExit as e:
+                rc = int(e.code) if isinstance(e.code, int) else 2
+                out, err = "", ""
+            except Exception as e:
+                rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+            if out:
+                _log(out)
+            if err:
+                _log(err)
+            _log(f"-- exit {rc} --")
+
+        btns = tk.Frame(body, bg=DEEP_BG)
+        btns.pack(fill="x")
+        ttk.Button(btns, text="Run",   command=_run,        style="Run.TButton").pack(side="left", padx=(0, 6))
+        ttk.Button(btns, text="Close", command=dlg.destroy, style="Run.TButton").pack(side="right")
+
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        try:
+            dlg.grab_set()
+        except tk.TclError:
+            pass
+        persona_w.focus_set()
 
     def _open_sudo_dialog(self, prompt: str) -> Optional[str]:
         """Modal Toplevel that asks for a sudo password (masked with *).

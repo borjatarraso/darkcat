@@ -747,6 +747,17 @@ def _build_parser() -> argparse.ArgumentParser:
                        help="Auto-generate handle and password if not given.")
     ppera.add_argument("--replace", action="store_true",
                        help="Overwrite an existing persona with the same name.")
+    ppera.add_argument(
+        "--mail-provider", default=None, metavar="SLUG",
+        help="Apply SMTP/IMAP defaults for a known provider "
+             "(see `darkcat personas mail-providers`). Any explicit "
+             "--site / --notes / --network still wins.",
+    )
+
+    ppers.add_parser(
+        "mail-providers",
+        help="List known mail providers with their SMTP/IMAP coordinates.",
+    )
 
     pperl = ppers.add_parser("list", help="List personas (filter optional).")
     pperl.add_argument("--network", default=None)
@@ -784,6 +795,169 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     pperdec.add_argument("--keep", action="store_true",
                          help="Keep the .gpg file after decryption (default removes it).")
+
+    pident = sub.add_parser(
+        "identity",
+        help="Generate, store, and track disposable per-project identities.",
+        description=(
+            "An identity is a persona created for a specific provider "
+            "(ProtonMail, Mastodon, ...) and tagged to a project so that "
+            "different projects don't share an account. The vault under "
+            "~/.darkcat tracks status (pending → confirmed → burned) and the "
+            "transport used at signup, so re-logins reuse the same circuit.\n\n"
+            "Workflow:\n"
+            "  darkcat identity providers                          # list known providers\n"
+            "  darkcat identity new --provider protonmail \\\n"
+            "      --transport tor --purpose research-forum-X\n"
+            "  darkcat identity list --provider protonmail\n"
+            "  darkcat identity show <name> --reveal\n"
+            "  darkcat identity confirm <name>                     # after manual signup\n"
+            "  darkcat identity link <parent> <child>              # recovery-email edge\n"
+            "  darkcat identity rotate-password <name>\n"
+            "  darkcat identity burn <name> --note 'project ended'\n"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pidents = pident.add_subparsers(dest="action", required=True, metavar="ACTION")
+
+    pidnew = pidents.add_parser("new", help="Generate a new identity for a provider.")
+    pidnew.add_argument("--provider", required=True,
+                        help="Provider slug (see `darkcat identity providers`).")
+    pidnew.add_argument("--name", default=None,
+                        help="Persona name (default: provider-handle).")
+    pidnew.add_argument("--purpose", default=None,
+                        help="Free-form project tag (e.g. 'research-forum-X').")
+    pidnew.add_argument("--transport", default="tor",
+                        choices=["tor", "i2p", "proxy", "vpn-pin"],
+                        help="Anonymising transport for the signup (default tor).")
+    pidnew.add_argument("--proxy-url", default=None,
+                        help="Required when --transport proxy.")
+    pidnew.add_argument("--pin-to", default=None,
+                        help="Required when --transport vpn-pin (target persona name).")
+    pidnew.add_argument("--instance", default=None,
+                        help="Per-instance providers (mastodon, …): instance suffix.")
+    pidnew.add_argument("--recovery-email", default=None,
+                        help="Set a recovery email on the identity (often another vault entry).")
+    pidnew.add_argument("--cap", type=int, default=None,
+                        help="Override per-provider soft cap (default 5).")
+    pidnew.add_argument("--force", action="store_true",
+                        help="Bypass per-provider cap.")
+    pidnew.add_argument("--password-length", type=int, default=24)
+    pidnew.add_argument("--launch", action="store_true",
+                        help="Open the signup URL in a transport-routed browser.")
+    pidnew.add_argument("--json", action="store_true",
+                        help="Print the generated identity as JSON.")
+
+    pidlist = pidents.add_parser("list", help="List identities (filter optional).")
+    pidlist.add_argument("--provider", default=None)
+    pidlist.add_argument("--category", default=None,
+                         choices=["email", "webmail", "vpn", "social"])
+    pidlist.add_argument("--status", default=None,
+                         choices=["pending", "confirmed", "locked", "burned"])
+    pidlist.add_argument("--purpose", default=None)
+    pidlist.add_argument("--json", action="store_true")
+
+    pidshow = pidents.add_parser("show", help="Print one identity's full record.")
+    pidshow.add_argument("name")
+    pidshow.add_argument("--reveal", action="store_true",
+                         help="Show password / recovery codes in plaintext.")
+    pidshow.add_argument("--json", action="store_true")
+
+    pidconf = pidents.add_parser(
+        "confirm",
+        help="Mark an identity confirmed (after the operator finishes signup).",
+    )
+    pidconf.add_argument("name")
+
+    pidrot = pidents.add_parser(
+        "rotate-password",
+        help="Generate and store a new password; old one is overwritten.",
+    )
+    pidrot.add_argument("name")
+    pidrot.add_argument("--length", type=int, default=24)
+    pidrot.add_argument("--print", action="store_true", dest="print_new",
+                        help="Print the new password (one-shot, won't print on subsequent show).")
+
+    pidburn = pidents.add_parser(
+        "burn",
+        help="Mark an identity burned (compromised / project ended). Row is kept for audit.",
+    )
+    pidburn.add_argument("name")
+    pidburn.add_argument("--note", default=None)
+
+    pidedit = pidents.add_parser(
+        "edit",
+        help=(
+            "Update credential fields on an existing identity "
+            "(handle / email / recovery / recovery-email / recovery-codes / display-name). "
+            "Use after the provider's signup form assigns its final values."
+        ),
+    )
+    pidedit.add_argument("name")
+    pidedit.add_argument("--handle", default=None,
+                         help="Set the account handle / username.")
+    pidedit.add_argument("--email", default=None,
+                         help="Set the persona's primary email (if the "
+                              "provider issues one).")
+    pidedit.add_argument("--recovery", default=None,
+                         help="Free-form recovery phrase / BIP-39 mnemonic.")
+    pidedit.add_argument("--recovery-email", default=None,
+                         help="Recovery email address.")
+    pidedit.add_argument("--recovery-code", action="append", default=None,
+                         dest="recovery_codes",
+                         help="Append one recovery code. Repeat for multiple. "
+                              "Use --recovery-codes-replace to overwrite the list.")
+    pidedit.add_argument("--recovery-codes-replace", action="store_true",
+                         help="Replace the recovery_codes list instead of appending.")
+    pidedit.add_argument("--display-name", default=None, dest="display_name",
+                         help="Override the generated display name.")
+    pidedit.add_argument("--notes", default=None,
+                         help="Free-form notes; pass an empty string to clear.")
+
+    pidlink = pidents.add_parser(
+        "link",
+        help="Record that PARENT was used to confirm CHILD (e.g. recovery email).",
+    )
+    pidlink.add_argument("parent")
+    pidlink.add_argument("child")
+
+    pidunlink = pidents.add_parser("unlink", help="Remove a link edge.")
+    pidunlink.add_argument("parent")
+    pidunlink.add_argument("child")
+
+    pidexp = pidents.add_parser(
+        "export",
+        help="Print one identity in a machine-readable form (json or env).",
+    )
+    pidexp.add_argument("name")
+    pidexp.add_argument("--format", choices=["json", "env"], default="json")
+    pidexp.add_argument("--reveal", action="store_true",
+                        help="Include secrets in the export (otherwise masked).")
+
+    pidlaunch = pidents.add_parser(
+        "launch",
+        help="Re-open the signup URL for an existing identity (manual-assist).",
+    )
+    pidlaunch.add_argument("name")
+    pidlaunch.add_argument("--no-spawn", action="store_true",
+                           help="Print the helper block but don't open a browser.")
+    pidlaunch.add_argument(
+        "--capture", action="store_true",
+        help="After the launch, prompt for the final handle / recovery "
+             "email / recovery codes the provider showed you and write "
+             "them straight into the vault. Equivalent to running "
+             "`identity edit` afterwards but folds it into one flow.",
+    )
+
+    pidprov = pidents.add_parser(
+        "providers",
+        help="List provider profiles known to the Identity Generator.",
+    )
+    pidprov.add_argument("--category", default=None,
+                         choices=["email", "webmail", "vpn", "social"])
+    pidprov.add_argument("--json", action="store_true")
+    pidprov.add_argument("--slug", default=None,
+                         help="Show full detail for one slug.")
 
     pchat = sub.add_parser(
         "chat",
@@ -852,6 +1026,43 @@ def _build_parser() -> argparse.ArgumentParser:
     pchating.add_argument("--persona", required=True)
     pchating.add_argument("--network", default=None)
     pchating.add_argument("-n", "--limit", type=int, default=200)
+
+    pchatjoin = pchats.add_parser(
+        "join",
+        help="Join a Telegram group/channel by @username, t.me/+invite, or id.",
+    )
+    pchatjoin.add_argument("target",
+                           help="@channel, https://t.me/+invite, or numeric id.")
+    pchatjoin.add_argument("--persona", required=True)
+    pchatjoin.add_argument("--network", default=None)
+
+    pchatleave = pchats.add_parser(
+        "leave",
+        help="Leave a Telegram group / unsubscribe from a channel by id.",
+    )
+    pchatleave.add_argument("channel_id")
+    pchatleave.add_argument("--persona", required=True)
+    pchatleave.add_argument("--network", default=None)
+
+    pchatconn = pchats.add_parser(
+        "connect",
+        help="Accept a SimpleX contact invitation link.",
+    )
+    pchatconn.add_argument("invite_link",
+                           help="https://simplex.chat/contact#... or simplex:/... link.")
+    pchatconn.add_argument("--persona", required=True)
+    pchatconn.add_argument("--network", default=None)
+
+    pchataddc = pchats.add_parser(
+        "addcontact",
+        help="Add a Session peer to this account's contact list.",
+    )
+    pchataddc.add_argument("peer_session_id",
+                           help="66-hex Session ID starting 05/15/25.")
+    pchataddc.add_argument("--persona", required=True)
+    pchataddc.add_argument("--network", default=None)
+    pchataddc.add_argument("--name", default=None,
+                           help="Local nickname for this peer.")
 
     pcon = sub.add_parser(
         "contacts",
@@ -1146,6 +1357,63 @@ def _build_parser() -> argparse.ArgumentParser:
     pzn.add_argument("--ingest", action="store_true",
                      help="Store each file as a page so scan / findings see it.")
 
+    pmail = sub.add_parser(
+        "mail",
+        help="Send and check email through a persona (SMTP / IMAP).",
+        description=(
+            "Outbound + inbound mail bound to a darkcat persona.\n\n"
+            "Persona shape:\n"
+            "  handle      SMTP/IMAP username (often the full address)\n"
+            "  password    SMTP/IMAP password / Bridge token / app pwd\n"
+            "  email       optional explicit From: address\n"
+            "  site        host[:port] (587 default for SMTP, 993 for IMAP)\n"
+            "  notes       free-form key=value pairs:\n"
+            "              smtp_port=N smtp_tls={starttls|ssl|none}\n"
+            "              imap_host=H imap_port=N imap_tls={ssl|starttls|none}\n\n"
+            "Proton Mail: run Proton Mail Bridge locally and point the\n"
+            "persona at 127.0.0.1:1025 (SMTP) / 127.0.0.1:1143 (IMAP).\n"
+            "Bridge handles the end-to-end crypto; darkcat just speaks\n"
+            "plain SMTP/IMAP to it.\n\n"
+            "Workflow:\n"
+            "  darkcat personas add me-proton --network clearnet \\\n"
+            "    --handle me@proton.me --password BRIDGE_PASS \\\n"
+            "    --site 127.0.0.1:1025 --email me@proton.me \\\n"
+            "    --notes 'smtp_tls=starttls imap_host=127.0.0.1 imap_port=1143 imap_tls=starttls'\n"
+            "  darkcat mail send --persona me-proton --to alice@example.com \\\n"
+            "    --subject hi --body 'first message from darkcat'\n"
+            "  darkcat mail check --persona me-proton -n 10"
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pmails = pmail.add_subparsers(dest="action", required=True, metavar="ACTION")
+
+    pmailsend = pmails.add_parser("send", help="Send one plain-text email.")
+    pmailsend.add_argument("--persona", required=True,
+                           help="Persona name carrying the SMTP credentials.")
+    pmailsend.add_argument("--to", required=True, action="append",
+                           help="Recipient address; repeat for multiple.")
+    pmailsend.add_argument("--cc", action="append", default=None,
+                           help="CC recipient; repeat for multiple.")
+    pmailsend.add_argument("--bcc", action="append", default=None,
+                           help="BCC recipient; repeat for multiple.")
+    pmailsend.add_argument("--reply-to", default=None,
+                           help="Reply-To: header.")
+    pmailsend.add_argument("--subject", required=True)
+    pmailsend.add_argument("--body", default=None,
+                           help="Body text. If omitted, read from --body-file or stdin.")
+    pmailsend.add_argument("--body-file", default=None,
+                           help="Read body from this file ('-' for stdin).")
+    pmailsend.add_argument("--timeout", type=float, default=30.0)
+
+    pmailcheck = pmails.add_parser(
+        "check", help="List recent INBOX headers (read-only).",
+    )
+    pmailcheck.add_argument("--persona", required=True)
+    pmailcheck.add_argument("--folder", default="INBOX")
+    pmailcheck.add_argument("-n", "--limit", type=int, default=25)
+    pmailcheck.add_argument("--timeout", type=float, default=30.0)
+    pmailcheck.add_argument("--json", action="store_true")
+
     sub.add_parser("tui", help="Launch the Textual TUI.")
     sub.add_parser("shell", help="Launch the interactive REPL.")
     sub.add_parser("gui", help="Launch the Tkinter desktop GUI.")
@@ -1381,6 +1649,147 @@ def _doctor_check_tesseract() -> tuple[str, str, str, str]:
     return ("ok", "tesseract", "found on $PATH", "")
 
 
+def _doctor_check_chat_backends() -> tuple[str, str, str, str]:
+    """Roll up `chat backends` into one row.
+
+    A full per-backend matrix would crowd the doctor table for users
+    who don't care about chat. We surface a single "N of M ready" line
+    and point at `chat backends` for the breakdown."""
+    from darkcat import chat as _ch
+    rows = _ch.availability_report()
+    total = len(rows)
+    ready = sum(1 for r in rows if r["available"])
+    if ready == total:
+        return ("ok", "chat backends",
+                f"all {total} backends ready", "")
+    missing = [r["network"] for r in rows if not r["available"]]
+    return ("warn", "chat backends",
+            f"{ready}/{total} ready (missing: {', '.join(missing)})",
+            "run `darkcat chat backends` for install hints per backend")
+
+
+def _doctor_check_proton_bridge() -> tuple[str, str, str, str]:
+    """TCP-probe 127.0.0.1:1025 (Proton Mail Bridge SMTP listener).
+
+    Bridge is optional — only flagged 'warn' if the user has clearly
+    configured *something* to use it (env var or refused connection)."""
+    import socket
+    host, port = "127.0.0.1", 1025
+    s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    s.settimeout(0.4)
+    try:
+        s.connect((host, port))
+        s.close()
+        return ("ok", "Proton Mail Bridge",
+                f"listening on {host}:{port}", "")
+    except (ConnectionRefusedError, OSError):
+        return ("warn", "Proton Mail Bridge",
+                f"no listener on {host}:{port}",
+                "start Proton Mail Bridge if you need to send mail through Proton")
+
+
+def _doctor_check_mail_hosts() -> list[tuple[str, str, str, str]]:
+    """TCP-probe SMTP/IMAP hosts for every mail-provider preset that the
+    operator's vault actually references.
+
+    Walks the plaintext vault (encrypted vaults are skipped here — we
+    don't ask for the passphrase from doctor), collects the unique set
+    of ``site`` and ``imap_host=...`` coordinates, and runs a short
+    ``connect()`` against each. Surfaces dead presets before
+    ``mail send`` blows up with a less actionable socket error.
+
+    Returns one row per (host, port) probed plus a fallback "no presets
+    in use" row when the vault is empty — keeping the doctor matrix
+    informative even on a fresh install.
+    """
+    import re as _re
+    import socket
+    from darkcat import personas as pv
+    from darkcat import mail_providers as _mp
+
+    path = pv.vault_path()
+    if not path.exists():
+        return [("ok", "mail hosts", "no vault yet — nothing to probe", "")]
+    if path.suffix == ".gpg":
+        # We won't prompt for a passphrase from inside doctor; the
+        # encrypted-vault case is documented and the operator can run
+        # `darkcat doctor` after `personas decrypt` if they want this
+        # check.
+        return [
+            ("warn", "mail hosts",
+             "vault is encrypted — host probe skipped",
+             "run `darkcat personas decrypt` first if you want this check"),
+        ]
+    try:
+        vault = pv.Vault(path=path)
+    except RuntimeError as e:
+        return [("fail", "mail hosts", f"vault unreadable: {e}",
+                 "check the file permissions on the vault")]
+
+    preset_sites: set[tuple[str, int, str]] = set()
+    for p in vault.personas:
+        site = (p.site or "").strip()
+        notes = (p.notes or "").strip()
+        # SMTP coordinate: `host:port` (or just `host` → default 25).
+        if site:
+            host, _, port_s = site.partition(":")
+            try:
+                port = int(port_s) if port_s else 25
+            except ValueError:
+                continue
+            preset_sites.add((host, port, "smtp"))
+        # IMAP coordinate: parsed out of the notes blob. Format the
+        # presets emit: `imap_host=... imap_port=...`.
+        m_host = _re.search(r"imap_host=(\S+)", notes)
+        m_port = _re.search(r"imap_port=(\d+)", notes)
+        if m_host:
+            try:
+                port = int(m_port.group(1)) if m_port else 143
+            except ValueError:
+                port = 143
+            preset_sites.add((m_host.group(1), port, "imap"))
+
+    # Filter to coordinates that look like real mail hosts — skip the
+    # local Bridge loopback (its own dedicated check above) and any
+    # onion / non-tcp values. Probing 127.0.0.1:1025 twice is harmless
+    # but noisy in the table.
+    rows: list[tuple[str, str, str, str]] = []
+    if not preset_sites:
+        # Surface the curated table so the operator knows what's on
+        # offer even when nothing is wired up yet.
+        slugs = ", ".join(_mp.slugs()) or "(none registered)"
+        return [
+            ("ok", "mail hosts",
+             f"no mail personas in vault — presets available: {slugs}",
+             ""),
+        ]
+
+    for host, port, kind in sorted(preset_sites):
+        if host in ("127.0.0.1", "localhost") and port == 1025:
+            # Already covered by _doctor_check_proton_bridge.
+            continue
+        label = f"{kind} {host}:{port}"
+        try:
+            with socket.create_connection((host, port), timeout=2.0):
+                rows.append(("ok", "mail hosts",
+                             f"{label} reachable", ""))
+        except socket.gaierror as e:
+            rows.append(("fail", "mail hosts",
+                         f"{label} DNS error: {e}",
+                         "check your network/DNS or the host spelling"))
+        except (socket.timeout, ConnectionRefusedError, OSError) as e:
+            rows.append(("warn", "mail hosts",
+                         f"{label} unreachable: {e}",
+                         f"check provider status / firewall for {host}"))
+
+    if not rows:
+        # All sites filtered out (e.g. only Proton Bridge).
+        rows.append(("ok", "mail hosts",
+                     "only loopback presets in vault (covered above)",
+                     ""))
+    return rows
+
+
 def _doctor_check_cookies(cfg: Config) -> tuple[str, str, str, str]:
     """Cookie jar — only flagged if the user opted in via --cookie-jar."""
     jar = cfg.cookie_jar_path
@@ -1413,6 +1822,9 @@ def doctor_run(cfg: Config) -> list[tuple[str, str, str, str]]:
         _doctor_check_transports(cfg),
         _doctor_check_pillow(),
         _doctor_check_tesseract(),
+        _doctor_check_chat_backends(),
+        _doctor_check_proton_bridge(),
+        *_doctor_check_mail_hosts(),
         _doctor_check_cookies(cfg),
     ]
 
@@ -2688,6 +3100,20 @@ def cmd_personas(cfg: Config, args: argparse.Namespace) -> int:
         print(pv.vault_path())
         return 0
 
+    if args.action == "mail-providers":
+        from darkcat import mail_providers as _mp
+        t = table("SLUG", "SITE", "NETWORK", "DESCRIPTION",
+                  title="known mail providers")
+        for preset in _mp.all_presets():
+            t.add_row(preset.slug, preset.site, preset.network,
+                      preset.description)
+        console.print(t)
+        console.print(
+            "[muted]Use[/] [key]personas add NAME --mail-provider SLUG[/] "
+            "[muted]to apply these as defaults.[/]"
+        )
+        return 0
+
     # Resolve passphrase only if the vault is encrypted on disk.
     path = pv.vault_path()
     pw = None
@@ -2705,16 +3131,34 @@ def cmd_personas(cfg: Config, args: argparse.Namespace) -> int:
         if args.gen:
             handle = handle or pv.generate_handle()
             password = password or pv.generate_password()
+
+        site = args.site or ""
+        notes = args.notes
+        network = args.network or ""
+        mp_slug = getattr(args, "mail_provider", None)
+        if mp_slug:
+            from darkcat import mail_providers as _mp
+            preset = _mp.get(mp_slug)
+            if preset is None:
+                err_console.print(
+                    f"[fail]ERROR:[/] unknown --mail-provider {mp_slug!r}; "
+                    f"try one of: {', '.join(_mp.slugs())}"
+                )
+                return 2
+            site = site or preset.site
+            notes = notes or preset.notes
+            network = network or preset.network
+
         persona = pv.Persona(
             name=args.name,
-            network=args.network or "",
-            site=args.site or "",
+            network=network,
+            site=site,
             handle=handle,
             password=password,
             email=args.email,
             pgp_key_id=args.pgp_key_id,
             recovery=args.recovery,
-            notes=args.notes,
+            notes=notes,
             user_agent=args.user_agent,
             proxy=args.proxy,
             tags=list(args.tags or []),
@@ -2963,6 +3407,527 @@ def _load_persona_or_die(name: str):
     return vault, p
 
 
+def cmd_identity(cfg: Config, args: argparse.Namespace) -> int:
+    """Driver for `darkcat identity *`.
+
+    The vault is the same JSON file the `personas` subcommand uses; the
+    identity workflow just adds extra fields on each row. Old persona
+    rows (no ``provider``) stay invisible to ``identity list`` and never
+    count against per-provider caps.
+    """
+    import json as _json
+    import os as _os
+    import uuid as _uuid
+
+    from darkcat import personas as pv
+    from darkcat.identity import (
+        DEFAULT_PER_PROVIDER_CAP,
+        IdentityVault,
+        PerProviderCapExceeded,
+        launch as _launch_signup,
+        new_identity,
+        pick_transport,
+        render_block,
+    )
+    from darkcat.identity import providers as provreg
+    from darkcat.identity.transport import describe_token, pick_transport as _pick_transport
+
+    # `providers` doesn't need the vault — handle up front.
+    if args.action == "providers":
+        provreg.load_all()
+        rows = list(provreg.registered())
+        if args.category:
+            rows = [r for r in rows if r.category == args.category]
+        if args.slug:
+            rows = [r for r in rows if r.slug == args.slug]
+            if not rows:
+                err_console.print(f"[fail]ERROR:[/] no provider with slug {args.slug!r}")
+                return 2
+        if args.json:
+            print(_json.dumps([
+                {
+                    "slug": r.slug, "display_name": r.display_name,
+                    "category": r.category, "signup_url": r.signup_url,
+                    "network_or_domain": r.network_or_domain,
+                    "transport_recommendation": r.transport_recommendation,
+                    "no_phone_path": r.no_phone_path,
+                    "tos_warning": r.tos_warning,
+                    "instances": [
+                        {"suffix": s, "url": u, "note": n}
+                        for s, u, n in r.instances
+                    ],
+                    "fields": [
+                        {"name": f.name, "source": f.source,
+                         "required": f.required, "notes": f.notes}
+                        for f in r.fields
+                    ],
+                    "notes": r.notes,
+                } for r in rows], indent=2))
+            return 0
+        if args.slug:
+            r = rows[0]
+            console.print(f"[key]slug[/]              [value]{r.slug}[/]")
+            console.print(f"[key]display_name[/]      [value]{r.display_name}[/]")
+            console.print(f"[key]category[/]          [value]{r.category}[/]")
+            console.print(f"[key]signup_url[/]        [value]{r.signup_url}[/]")
+            console.print(f"[key]network_or_domain[/] [value]{r.network_or_domain}[/]")
+            console.print(f"[key]transport[/]         [value]{r.transport_recommendation}[/]")
+            console.print(f"[key]fields[/]")
+            for f in r.fields:
+                req = "required" if f.required else "optional"
+                hint = f" — {f.notes}" if f.notes else ""
+                console.print(f"  • [value]{f.name}[/] ← {f.source} ({req}){hint}")
+            console.print(f"[key]no_phone_path[/]")
+            console.print(f"  [muted]{r.no_phone_path}[/]")
+            if r.instances:
+                console.print(f"[key]instances[/]")
+                for s, u, n in r.instances:
+                    console.print(f"  • [value]{s}[/] → {u}")
+                    if n:
+                        console.print(f"      [muted]{n}[/]")
+            console.print(f"[key]tos_warning[/]")
+            console.print(f"  [muted]{r.tos_warning}[/]")
+            if r.notes:
+                console.print(f"[key]notes[/]")
+                console.print(f"  [muted]{r.notes}[/]")
+            return 0
+        if not rows:
+            console.print("[muted](no providers registered)[/]")
+            return 0
+        t = table("SLUG", "NAME", "CATEGORY", "DOMAIN", "TRANSPORT")
+        for r in rows:
+            t.add_row(r.slug, r.display_name, r.category,
+                      _truncate(r.network_or_domain, 40),
+                      r.transport_recommendation)
+        console.print(t)
+        return 0
+
+    # Everything else needs the vault.
+    base = pv.default_dir()
+    base.mkdir(parents=True, exist_ok=True)
+    path = pv.vault_path()
+    pw = None
+    if path.exists() and path.suffix == ".gpg":
+        pw = _vault_passphrase()
+    try:
+        inner = pv.Vault(path=path, passphrase=pw)
+    except RuntimeError as e:
+        err_console.print(f"[fail]ERROR:[/] {e}")
+        return 2
+    cap = args.cap if getattr(args, "cap", None) else DEFAULT_PER_PROVIDER_CAP
+    vault = IdentityVault(inner, per_provider_cap=cap)
+
+    if args.action == "new":
+        provreg.load_all()
+        prof = provreg.get(args.provider)
+        if prof is None:
+            err_console.print(
+                f"[fail]ERROR:[/] unknown provider {args.provider!r}; "
+                f"`darkcat identity providers` to list."
+            )
+            return 2
+        signup_url = prof.signup_url
+        network_or_domain = prof.network_or_domain
+        if args.instance:
+            match = [t for t in prof.instances if t[0] == args.instance]
+            if not match:
+                err_console.print(
+                    f"[fail]ERROR:[/] {prof.slug} has no instance "
+                    f"{args.instance!r}; available: "
+                    f"{', '.join(s for s, _, _ in prof.instances) or '(none)'}"
+                )
+                return 2
+            _, signup_url, _ = match[0]
+            try:
+                from urllib.parse import urlparse
+                network_or_domain = urlparse(signup_url).netloc or network_or_domain
+            except Exception:
+                pass
+
+        gen = new_identity(password_length=args.password_length)
+        name = args.name or f"{prof.slug}-{gen.handle}"
+        if vault.inner.get(name) is not None:
+            err_console.print(
+                f"[fail]ERROR:[/] persona named {name!r} already exists; "
+                f"pick another --name or remove the existing one"
+            )
+            return 2
+
+        try:
+            choice = pick_transport(
+                args.transport,
+                seed=name,
+                proxy_url=args.proxy_url,
+                pin_to=args.pin_to,
+            )
+        except (ValueError, NotImplementedError) as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+
+        persona = pv.Persona(
+            name=name,
+            network=args.transport,
+            site=network_or_domain,
+            handle=gen.handle,
+            password=gen.password,
+            email=None,
+            recovery=None,
+            recovery_email=args.recovery_email,
+            display_name=gen.display_name,
+            birthdate=gen.birthdate,
+            locale=gen.locale,
+            timezone=gen.timezone,
+            bio=gen.bio,
+            cookie_jar=str(pv.cookie_jar_for(name)),
+            provider=prof.slug,
+            category=prof.category,
+            status=pv.STATUS_PENDING,
+            purpose_tag=args.purpose,
+            network_or_domain=network_or_domain,
+            transport_used=f"{choice.kind}:{choice.token}",
+        )
+        try:
+            vault.add(persona, force=args.force)
+        except PerProviderCapExceeded as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        vault.save()
+
+        # Show generated values now — password is the only thing the
+        # operator can't recover later without --reveal, so print it
+        # plainly here.
+        if args.json:
+            d = pv.redact_dict(persona, reveal=True)
+            d["_signup"] = {
+                "url": signup_url,
+                "transport": choice.detail,
+                "no_phone_path": prof.no_phone_path,
+                "tos_warning": prof.tos_warning,
+            }
+            print(_json.dumps(d, indent=2))
+            return 0
+        console.print(f"[ok]+[/] identity [value]{name}[/] created "
+                      f"([muted]{prof.slug}/{prof.category}[/])")
+        console.print(f"  [key]handle[/]        [value]{gen.handle}[/]")
+        console.print(f"  [key]password[/]      [value]{gen.password}[/]"
+                      f"  [muted](shown once — store now)[/]")
+        console.print(f"  [key]display_name[/]  [value]{gen.display_name}[/]")
+        console.print(f"  [key]locale/tz[/]     [value]{gen.locale}[/] / [value]{gen.timezone}[/]")
+        console.print(f"  [key]birthdate[/]     [value]{gen.birthdate}[/]")
+        console.print(f"  [key]bio[/]           [value]{gen.bio}[/]")
+        console.print(f"  [key]transport[/]     [value]{choice.detail}[/]")
+        console.print(f"  [key]signup_url[/]    [value]{signup_url}[/]")
+        console.print(f"\n[muted]No-phone path:[/]\n  {prof.no_phone_path}")
+        console.print(f"\n[muted]ToS:[/] {prof.tos_warning}")
+        console.print(f"\n[muted]Status: [/]pending — run `darkcat identity confirm {name}` "
+                      f"once the account is live.")
+
+        if args.launch:
+            result = _launch_signup(prof, persona, choice, cfg,
+                                    gen=gen, signup_url=signup_url)
+            rule(console, "manual-assist signup")
+            console.print(render_block(prof, result, signup_url))
+        return 0
+
+    if args.action == "list":
+        rows = vault.find(
+            provider=args.provider,
+            category=args.category,
+            status=args.status,
+            purpose=args.purpose,
+        )
+        if args.json:
+            print(_json.dumps([pv.redact_dict(p) for p in rows], indent=2))
+            return 0
+        if not rows:
+            console.print("[muted](no identities)[/]")
+            return 0
+        t = table("NAME", "PROVIDER", "CATEGORY", "STATUS",
+                  "PURPOSE", "TRANSPORT", "CREATED")
+        for p in rows:
+            tk = describe_token(
+                (p.transport_used or "").split(":", 1)[1]
+                if (p.transport_used and ":" in p.transport_used)
+                else p.transport_used
+            )
+            t.add_row(
+                p.name, p.provider or "-", p.category or "-",
+                p.status, _truncate(p.purpose_tag or "-", 30),
+                tk,
+                time.strftime("%Y-%m-%d", time.localtime(p.created_at)),
+            )
+        console.print(t)
+        return 0
+
+    if args.action == "show":
+        p = vault.inner.get(args.name)
+        if p is None or not p.provider:
+            err_console.print(
+                f"[fail]ERROR:[/] no identity named {args.name!r}"
+            )
+            return 2
+        # Re-prompt before revealing secrets, even if the vault is plain.
+        reveal = bool(args.reveal)
+        if reveal and not _os.environ.get("DARKCAT_VAULT_PASSPHRASE"):
+            confirm = input(
+                f"reveal secrets for {p.name!r}? [y/N] "
+            ).strip().lower()
+            if confirm not in ("y", "yes"):
+                reveal = False
+                console.print("[muted](secrets stay masked)[/]")
+        d = pv.redact_dict(p, reveal=reveal)
+        if args.json:
+            print(_json.dumps(d, indent=2))
+            return 0
+        for k, v in d.items():
+            if v in (None, "", []):
+                continue
+            console.print(f"  [key]{k:<18}[/] [value]{v}[/]")
+        return 0
+
+    if args.action == "confirm":
+        try:
+            p = vault.confirm(args.name)
+        except KeyError:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        except ValueError as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        vault.save()
+        console.print(f"[ok]✓[/] {p.name}: {pv.STATUS_CONFIRMED}")
+        return 0
+
+    if args.action == "edit":
+        p = vault.inner.get(args.name)
+        if p is None:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        changed: list[str] = []
+        if args.handle is not None:
+            p.handle = args.handle
+            changed.append("handle")
+        if args.email is not None:
+            p.email = args.email or None
+            changed.append("email")
+        if args.recovery is not None:
+            p.recovery = args.recovery or None
+            changed.append("recovery")
+        if args.recovery_email is not None:
+            p.recovery_email = args.recovery_email or None
+            changed.append("recovery_email")
+        if args.recovery_codes is not None:
+            if args.recovery_codes_replace:
+                p.recovery_codes = list(args.recovery_codes)
+            else:
+                p.recovery_codes = list(p.recovery_codes) + list(args.recovery_codes)
+            changed.append("recovery_codes")
+        if args.display_name is not None:
+            p.display_name = args.display_name or None
+            changed.append("display_name")
+        if args.notes is not None:
+            p.notes = args.notes or None
+            changed.append("notes")
+        if not changed:
+            err_console.print(
+                "[fail]ERROR:[/] nothing to update; pass at least one of "
+                "--handle / --email / --recovery / --recovery-email / "
+                "--recovery-code / --display-name / --notes"
+            )
+            return 2
+        vault.save()
+        console.print(
+            f"[ok]✓[/] {p.name}: updated {', '.join(changed)}"
+        )
+        return 0
+
+    if args.action == "rotate-password":
+        new_pw = pv.generate_password(args.length)
+        try:
+            p = vault.rotate_password(args.name, new_pw)
+        except KeyError:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        vault.save()
+        console.print(f"[ok]✓[/] password rotated for [value]{p.name}[/]")
+        if args.print_new:
+            console.print(f"  [key]new password[/]  [value]{new_pw}[/]"
+                          f"  [muted](shown once)[/]")
+        else:
+            console.print("  [muted]use `identity show <name> --reveal` to retrieve[/]")
+        return 0
+
+    if args.action == "burn":
+        try:
+            p = vault.burn(args.name, note=args.note)
+        except KeyError:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        vault.save()
+        console.print(f"[ok]✓[/] {p.name}: {pv.STATUS_BURNED}")
+        return 0
+
+    if args.action == "link":
+        try:
+            vault.link(args.parent, args.child)
+        except KeyError as e:
+            err_console.print(f"[fail]ERROR:[/] no identity named {e.args[0]!r}")
+            return 2
+        except ValueError as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        vault.save()
+        console.print(f"[ok]✓[/] linked: {args.parent} → {args.child}")
+        return 0
+
+    if args.action == "unlink":
+        if not vault.unlink(args.parent, args.child):
+            err_console.print(
+                f"[fail]ERROR:[/] no link {args.parent} → {args.child}"
+            )
+            return 2
+        vault.save()
+        console.print(f"[ok]-[/] unlinked: {args.parent} → {args.child}")
+        return 0
+
+    if args.action == "export":
+        p = vault.inner.get(args.name)
+        if p is None or not p.provider:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        if args.reveal and not _os.environ.get("DARKCAT_VAULT_PASSPHRASE"):
+            confirm = input(
+                f"export {p.name!r} secrets in plaintext? [y/N] "
+            ).strip().lower()
+            if confirm not in ("y", "yes"):
+                err_console.print("[fail]aborted[/]")
+                return 2
+        d = pv.redact_dict(p, reveal=args.reveal)
+        if args.format == "json":
+            print(_json.dumps(d, indent=2))
+        else:
+            for k, v in d.items():
+                if v in (None, "", []):
+                    continue
+                if isinstance(v, list):
+                    v = ",".join(str(x) for x in v)
+                key = f"DARKCAT_ID_{k.upper()}"
+                # POSIX shell-quote: escape single quotes by closing,
+                # adding a literal `'`, and reopening.
+                safe = str(v).replace("'", "'\\''")
+                print(f"{key}='{safe}'")
+        return 0
+
+    if args.action == "launch":
+        p = vault.inner.get(args.name)
+        if p is None or not p.provider:
+            err_console.print(f"[fail]ERROR:[/] no identity named {args.name!r}")
+            return 2
+        provreg.load_all()
+        prof = provreg.get(p.provider)
+        if prof is None:
+            err_console.print(
+                f"[fail]ERROR:[/] identity references unknown provider "
+                f"{p.provider!r}; profile may have been removed"
+            )
+            return 2
+        # Reconstruct the original transport choice from the stored token.
+        kind, _, token = (p.transport_used or "").partition(":")
+        try:
+            choice = _pick_transport(
+                kind or "tor",
+                seed=p.name,
+                proxy_url=token if kind == "proxy" else None,
+                pin_to=token if kind == "vpn-pin" else None,
+            )
+        except (ValueError, NotImplementedError) as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        signup_url = prof.signup_url
+        # If the persona was created against a non-default instance,
+        # look it up by domain so re-launch goes back to the same place.
+        if p.network_or_domain and prof.instances:
+            for _slug, inst_url, _note in prof.instances:
+                try:
+                    from urllib.parse import urlparse as _u
+                    if _u(inst_url).netloc == p.network_or_domain:
+                        signup_url = inst_url
+                        break
+                except Exception:
+                    pass
+        result = _launch_signup(
+            prof, p, choice, cfg,
+            signup_url=signup_url,
+            spawn=not args.no_spawn,
+        )
+        rule(console, f"manual-assist signup ({p.name})")
+        console.print(render_block(prof, result, signup_url))
+
+        # --capture: post-signup prompt so the operator can record the
+        # real handle / recovery codes the provider showed once, without
+        # having to remember the `identity edit` flags afterwards. Only
+        # runs against an interactive TTY; in scripts / TUI / GUI the
+        # flag is left off and the caller runs its own follow-up flow.
+        if getattr(args, "capture", False) and sys.stdin.isatty():
+            console.print()
+            console.print(
+                "[muted]Capture the values the provider just showed you. "
+                "Leave blank to skip a field; secrets stay in the vault "
+                "only.[/]"
+            )
+            try:
+                new_handle = input(f"final handle [{p.handle or ''}]: ").strip()
+                new_email  = input(f"email [{p.email or ''}]: ").strip()
+                new_rec_em = input(
+                    f"recovery email [{p.recovery_email or ''}]: "
+                ).strip()
+                new_rec    = input(
+                    "recovery phrase / backup blob (blank to skip): "
+                ).strip()
+                console.print(
+                    "[muted]Paste recovery codes one per line; "
+                    "blank line to finish.[/]"
+                )
+                codes: list[str] = []
+                while True:
+                    line = input("code: ").strip()
+                    if not line:
+                        break
+                    codes.append(line)
+            except (EOFError, KeyboardInterrupt):
+                console.print("[muted](capture aborted; existing values "
+                              "preserved)[/]")
+                return 0
+
+            changed: list[str] = []
+            if new_handle:
+                p.handle = new_handle
+                changed.append("handle")
+            if new_email:
+                p.email = new_email
+                changed.append("email")
+            if new_rec_em:
+                p.recovery_email = new_rec_em
+                changed.append("recovery_email")
+            if new_rec:
+                p.recovery = new_rec
+                changed.append("recovery")
+            if codes:
+                p.recovery_codes = list(p.recovery_codes) + codes
+                changed.append("recovery_codes")
+            if changed:
+                vault.save()
+                console.print(
+                    f"[ok]✓[/] captured: {', '.join(changed)}"
+                )
+            else:
+                console.print("[muted](nothing captured)[/]")
+        return 0
+
+    err_console.print(f"[fail]ERROR:[/] unknown action {args.action!r}")
+    return 2
+
+
 def cmd_chat(cfg: Config, args: argparse.Namespace) -> int:
     import json as _json
     from darkcat import chat as ch
@@ -3073,6 +4038,72 @@ def cmd_chat(cfg: Config, args: argparse.Namespace) -> int:
             )
             return 0
 
+        if args.action == "join":
+            if not hasattr(m, "join"):
+                err_console.print(
+                    f"[fail]ERROR:[/] backend {network!r} does not "
+                    f"support join (Telegram only)."
+                )
+                return 2
+            try:
+                chan_id = m.join(args.target)
+            except ch.AuthError as e:
+                err_console.print(f"[fail]ERROR:[/] {e}")
+                return 2
+            console.print(
+                f"[ok]+[/] joined [value]{args.target}[/] "
+                f"(channel_id={chan_id})"
+            )
+            return 0
+
+        if args.action == "leave":
+            if not hasattr(m, "leave"):
+                err_console.print(
+                    f"[fail]ERROR:[/] backend {network!r} does not "
+                    f"support leave (Telegram only)."
+                )
+                return 2
+            try:
+                m.leave(args.channel_id)
+            except ch.AuthError as e:
+                err_console.print(f"[fail]ERROR:[/] {e}")
+                return 2
+            console.print(f"[ok]+[/] left [value]{args.channel_id}[/]")
+            return 0
+
+        if args.action == "connect":
+            if not hasattr(m, "connect_link"):
+                err_console.print(
+                    f"[fail]ERROR:[/] backend {network!r} does not "
+                    f"support connect (SimpleX only)."
+                )
+                return 2
+            try:
+                summary = m.connect_link(args.invite_link)
+            except ch.AuthError as e:
+                err_console.print(f"[fail]ERROR:[/] {e}")
+                return 2
+            console.print(f"[ok]+[/] {summary}")
+            return 0
+
+        if args.action == "addcontact":
+            if not hasattr(m, "add_contact"):
+                err_console.print(
+                    f"[fail]ERROR:[/] backend {network!r} does not "
+                    f"support addcontact (Session only)."
+                )
+                return 2
+            try:
+                peer = m.add_contact(args.peer_session_id, name=args.name)
+            except ch.AuthError as e:
+                err_console.print(f"[fail]ERROR:[/] {e}")
+                return 2
+            console.print(
+                f"[ok]+[/] added peer [value]{peer[:10]}…[/] "
+                f"(name={args.name or '-'})"
+            )
+            return 0
+
         if args.action == "ingest":
             from darkcat.scanner import scan_text
             messages = m.read(args.channel_id, limit=args.limit)
@@ -3113,6 +4144,83 @@ def cmd_chat(cfg: Config, args: argparse.Namespace) -> int:
             m.disconnect()
         except Exception:
             pass
+
+
+def cmd_mail(cfg: Config, args: argparse.Namespace) -> int:
+    """Driver for `darkcat mail send | check`."""
+    import json as _json
+    import sys as _sys
+    from darkcat import mail as _mail
+
+    _vault, persona = _load_persona_or_die(args.persona)
+    if persona is None:
+        return 2
+
+    if args.action == "send":
+        body = args.body
+        if body is None and args.body_file:
+            if args.body_file == "-":
+                body = _sys.stdin.read()
+            else:
+                try:
+                    with open(args.body_file, "r", encoding="utf-8") as f:
+                        body = f.read()
+                except OSError as e:
+                    err_console.print(f"[fail]ERROR:[/] {e}")
+                    return 2
+        if body is None:
+            err_console.print(
+                "[fail]ERROR:[/] one of --body / --body-file is required"
+            )
+            return 2
+        try:
+            msg_id = _mail.send_via_persona(
+                persona,
+                to=list(args.to),
+                cc=list(args.cc or []),
+                bcc=list(args.bcc or []),
+                reply_to=args.reply_to,
+                subject=args.subject,
+                body=body,
+                timeout=args.timeout,
+            )
+        except _mail.MailError as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        console.print(
+            f"[ok]+[/] sent to [value]{', '.join(args.to)}[/] "
+            f"(Message-Id={msg_id})"
+        )
+        return 0
+
+    if args.action == "check":
+        try:
+            headers = _mail.check_inbox(
+                persona, folder=args.folder, limit=args.limit,
+                timeout=args.timeout,
+            )
+        except _mail.MailError as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+        if args.json:
+            print(_json.dumps([{
+                "uid": h.uid, "from": h.from_, "subject": h.subject,
+                "date": h.date, "size": h.size,
+            } for h in headers], indent=2))
+            return 0
+        if not headers:
+            console.print(f"[muted](no messages in {args.folder})[/]")
+            return 0
+        t = table("UID", "DATE", "FROM", "SUBJECT", "SIZE")
+        for h in headers:
+            t.add_row(h.uid, _truncate(h.date, 25),
+                      _truncate(h.from_, 32),
+                      _truncate(h.subject, 50), str(h.size))
+        console.print(t)
+        return 0
+
+    err_console.print(f"[fail]ERROR:[/] unknown mail action {args.action!r}")
+    return 2
 
 
 def cmd_liveness(cfg: Config, args: argparse.Namespace) -> int:
@@ -3586,8 +4694,10 @@ def main(argv: Optional[list[str]] = None) -> int:
         "mirrors":  lambda: cmd_mirrors(cfg, args),
         "cookies":  lambda: cmd_cookies(cfg, args),
         "personas": lambda: cmd_personas(cfg, args),
+        "identity": lambda: cmd_identity(cfg, args),
         "contacts": lambda: cmd_contacts(cfg, args),
         "chat":     lambda: cmd_chat(cfg, args),
+        "mail":     lambda: cmd_mail(cfg, args),
         "schedule": lambda: cmd_schedule(cfg, args),
         "plugins":  lambda: cmd_plugins(cfg, args),
         "dashboard": lambda: cmd_dashboard(cfg, args),

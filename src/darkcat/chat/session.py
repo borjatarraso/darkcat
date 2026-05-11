@@ -177,6 +177,29 @@ class SessionMessenger(Messenger):
             ))
         return out
 
+    def add_contact(self, peer_session_id: str,
+                    name: Optional[str] = None) -> str:
+        """Add a peer Session ID to this account's contacts.
+
+        Returns the peer's Session ID (echoed back, lower-cased).
+        ``name`` is an optional local nickname for display."""
+        if not self._connected:
+            raise AuthError("not connected")
+        peer = peer_session_id.strip().lower()
+        if not _SESSION_ID_RX.match(peer):
+            raise AuthError(
+                "peer Session ID must be 66-hex starting 05/15/25"
+            )
+        args = [
+            "session-cli", "contacts", "add",
+            "--account", self._account_id,
+            "--to", peer, "--json",
+        ]
+        if name:
+            args.extend(["--name", name])
+        _run(args)
+        return peer
+
     def send(self, channel_id: str, text: str) -> ChatMessage:
         if not self._connected:
             raise AuthError("not connected")

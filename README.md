@@ -621,6 +621,9 @@ The `docs/` directory carries the long-form material:
 - **`docs/INTERNALS.md`** — architecture, fetch path, scan path,
   watchlist firing model, schema, threat model, extension points.
 - **`docs/CONFIG.md`** — every `Config` field, env var, and CLI flag.
+- **`docs/identity/`** — Identity Generator (compartmented account creation
+  for 15 providers; manual-assist signup; encrypted vault; CLI/REPL/TUI/GUI
+  parity). Start at `docs/identity/01-overview.md`.
 
 Run `darkcat init` once for a guided first-run bootstrap.
 

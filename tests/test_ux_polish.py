@@ -118,6 +118,213 @@ def test_cmd_doctor_returns_one_on_any_failure(tmp_path: Path) -> None:
     assert rc == 1
 
 
+def test_doctor_chat_backends_aggregates_to_single_row() -> None:
+    """`chat backends` would crowd the doctor table; we collapse it."""
+    fake_report = [
+        {"network": "telegram", "available": True,  "dep": "telethon",   "hint": ""},
+        {"network": "matrix",   "available": False, "dep": "matrix-nio", "hint": "pip install matrix-nio"},
+        {"network": "session",  "available": False, "dep": "session-cli", "hint": "install session-cli"},
+    ]
+    with mock.patch("darkcat.chat.availability_report", return_value=fake_report):
+        level, label, detail, fix = cli._doctor_check_chat_backends()
+    assert level == "warn"
+    assert label == "chat backends"
+    assert "1/3 ready" in detail
+    assert "matrix" in detail and "session" in detail
+    assert "chat backends" in fix
+
+
+def test_doctor_chat_backends_ok_when_all_ready() -> None:
+    fake_report = [
+        {"network": "telegram", "available": True, "dep": "telethon", "hint": ""},
+        {"network": "session",  "available": True, "dep": "session-cli", "hint": ""},
+    ]
+    with mock.patch("darkcat.chat.availability_report", return_value=fake_report):
+        level, _label, detail, fix = cli._doctor_check_chat_backends()
+    assert level == "ok"
+    assert "all 2" in detail
+    assert fix == ""
+
+
+def test_doctor_proton_bridge_warns_when_listener_refused(monkeypatch) -> None:
+    """If 127.0.0.1:1025 is not listening (the normal case for users who
+    haven't started Bridge), warn but don't fail — Bridge is optional."""
+    import socket as _socket
+
+    class _RefusingSocket:
+        def __init__(self, *_a, **_kw): pass
+        def settimeout(self, _t): pass
+        def connect(self, _addr): raise ConnectionRefusedError()
+        def close(self): pass
+    monkeypatch.setattr(cli.socket if hasattr(cli, "socket") else _socket,
+                        "socket", _RefusingSocket, raising=False)
+    # The probe imports socket lazily inside the function — patch the
+    # standard library entry the function uses.
+    monkeypatch.setattr("socket.socket", _RefusingSocket)
+
+    level, label, detail, fix = cli._doctor_check_proton_bridge()
+    assert level == "warn"
+    assert "Proton Mail Bridge" in label
+    assert "1025" in detail
+    assert "Bridge" in fix
+
+
+def test_chat_screen_presets_cover_every_chat_network_verb() -> None:
+    """Each preset must (a) carry a valid action the CLI parser knows
+    about and (b) carry a known network token. A typo in the preset
+    table would silently produce a dead button — catch it at test time."""
+    from darkcat.tui import ChatScreen
+    presets = ChatScreen._PRESETS
+    assert presets, "ChatScreen._PRESETS is empty"
+    cli_actions = {"backends", "login", "list", "read", "send", "ingest",
+                   "join", "leave", "connect", "addcontact"}
+    cli_networks = {"", "telegram", "matrix", "xmpp", "simplex", "session"}
+    seen_ids: set[str] = set()
+    for label, btn_id, network, action in presets:
+        assert label and btn_id and action, (label, btn_id, action)
+        assert btn_id.startswith("preset-"), btn_id
+        assert btn_id not in seen_ids, f"duplicate preset id {btn_id!r}"
+        seen_ids.add(btn_id)
+        assert action in cli_actions, (btn_id, action)
+        assert network in cli_networks, (btn_id, network)
+
+
+def test_doctor_proton_bridge_ok_when_listening(monkeypatch) -> None:
+    class _AcceptingSocket:
+        def __init__(self, *_a, **_kw): pass
+        def settimeout(self, _t): pass
+        def connect(self, _addr): pass  # accept
+        def close(self): pass
+    monkeypatch.setattr("socket.socket", _AcceptingSocket)
+    level, _label, detail, fix = cli._doctor_check_proton_bridge()
+    assert level == "ok"
+    assert "1025" in detail
+    assert fix == ""
+
+
+# ---- doctor: mail hosts probe ---------------------------------------------
+
+
+def test_doctor_mail_hosts_empty_vault_returns_ok_with_preset_list(
+    tmp_path, monkeypatch,
+) -> None:
+    """Empty vault → one informational row listing the curated slugs.
+    Operators on a fresh install see "what's on offer" rather than a
+    silent skip."""
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+    rows = cli._doctor_check_mail_hosts()
+    assert len(rows) == 1
+    level, label, detail, _fix = rows[0]
+    assert level == "ok"
+    assert label == "mail hosts"
+    # Either "no vault yet" (fresh install) or the preset list (vault
+    # exists but is empty of mail personas) is acceptable; both mean
+    # the operator hasn't wired anything up yet.
+    assert (
+        "no vault" in detail
+        or "no mail personas" in detail
+        or "disroot" in detail
+    ), detail
+
+
+def test_doctor_mail_hosts_probes_each_smtp_imap_pair(
+    tmp_path, monkeypatch,
+) -> None:
+    """A persona added with --mail-provider disroot must trigger one
+    SMTP probe + one IMAP probe (different host/port pairs)."""
+    import argparse
+    from darkcat.config import Config
+    from darkcat.identity import invoke_cli_capturing
+
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+    cfg = Config()
+    rc, _o, err = invoke_cli_capturing(cfg, argparse.Namespace(
+        cmd="personas", action="add", name="me-disroot",
+        network="", site="", handle=None, password=None, email=None,
+        pgp_key_id=None, recovery=None, notes=None,
+        user_agent=None, proxy=None, tags=[],
+        gen=True, replace=False, mail_provider="disroot",
+    ))
+    assert rc == 0, err
+
+    captured: list[tuple[str, int, float]] = []
+
+    class _FakeConn:
+        def __init__(self, addr, timeout=None):
+            host, port = addr
+            captured.append((host, port, timeout or 0.0))
+        def __enter__(self): return self
+        def __exit__(self, *_a): return False
+
+    monkeypatch.setattr("socket.create_connection", _FakeConn)
+
+    rows = cli._doctor_check_mail_hosts()
+    # Both SMTP (disroot.org:587) and IMAP (disroot.org:993) must be
+    # probed, in sorted order — sorted by host then port.
+    hosts_probed = {(h, p) for h, p, _t in captured}
+    assert ("disroot.org", 587) in hosts_probed
+    assert ("disroot.org", 993) in hosts_probed
+    # Every row reports "reachable" because the fake socket accepts.
+    levels = {r[0] for r in rows}
+    assert levels == {"ok"}, rows
+
+
+def test_doctor_mail_hosts_warns_on_refused(tmp_path, monkeypatch) -> None:
+    """A refused connection must downgrade to warn (not fail) — the
+    distinction matters because the operator's network might just be
+    behind a captive portal, not the preset being dead."""
+    import argparse
+    from darkcat.config import Config
+    from darkcat.identity import invoke_cli_capturing
+
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+    cfg = Config()
+    rc, _o, err = invoke_cli_capturing(cfg, argparse.Namespace(
+        cmd="personas", action="add", name="me-disroot",
+        network="", site="", handle=None, password=None, email=None,
+        pgp_key_id=None, recovery=None, notes=None,
+        user_agent=None, proxy=None, tags=[],
+        gen=True, replace=False, mail_provider="disroot",
+    ))
+    assert rc == 0, err
+
+    def _refuse(_addr, timeout=None):
+        raise ConnectionRefusedError("nope")
+
+    monkeypatch.setattr("socket.create_connection", _refuse)
+
+    rows = cli._doctor_check_mail_hosts()
+    levels = {r[0] for r in rows}
+    assert "warn" in levels
+    # Every warn row carries a fix hint mentioning the host so the
+    # operator knows which preset to investigate.
+    for level, _label, detail, fix in rows:
+        if level == "warn":
+            assert "disroot.org" in detail or "disroot.org" in fix
+
+
+def test_doctor_mail_hosts_skips_encrypted_vault(tmp_path, monkeypatch) -> None:
+    """Encrypted vault path → warn, not fail; we don't ask for the
+    passphrase from inside doctor."""
+    from darkcat import personas as pv
+
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+    # Drop a fake .gpg next to where the vault would live.
+    gpg_path = pv.vault_path().with_suffix(".gpg")
+    gpg_path.parent.mkdir(parents=True, exist_ok=True)
+    gpg_path.write_bytes(b"fake gpg payload")
+
+    # Make vault_path() report the encrypted path.
+    monkeypatch.setattr(pv, "vault_path", lambda *a, **kw: gpg_path)
+
+    rows = cli._doctor_check_mail_hosts()
+    assert len(rows) == 1
+    level, label, detail, fix = rows[0]
+    assert level == "warn"
+    assert "encrypted" in detail
+    assert "decrypt" in fix
+
+
 # ---- REPL: subaction completion -------------------------------------------
 
 

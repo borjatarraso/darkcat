@@ -271,5 +271,52 @@ class TelegramMessenger(Messenger):
 
         return self._run(_go())
 
+    # ---- group / channel membership --------------------------------
+
+    def join(self, target: str) -> str:
+        """Join a public group / channel.
+
+        ``target`` accepts a @username, a t.me/joinchat/ invite hash, or
+        the numeric id of a chat that's already in the dialog list.
+        Returns the resolved channel id (string)."""
+        if not self._client:
+            raise AuthError("not connected; call connect() first")
+        from telethon.tl.functions.channels import JoinChannelRequest
+        from telethon.tl.functions.messages import ImportChatInviteRequest
+
+        target = target.strip()
+
+        async def _go():
+            if target.startswith(("https://t.me/+", "https://t.me/joinchat/",
+                                  "t.me/+", "t.me/joinchat/")):
+                # invite-only group: pull the hash and ImportChatInvite
+                hash_ = target.rsplit("/", 1)[-1].lstrip("+")
+                res = await self._client(ImportChatInviteRequest(hash_))
+                chat = res.chats[0] if getattr(res, "chats", None) else None
+                return str(getattr(chat, "id", target))
+            if target.startswith("https://t.me/") or target.startswith("t.me/"):
+                target_norm = target.split("t.me/", 1)[-1].split("/", 1)[0]
+            elif target.startswith("@"):
+                target_norm = target[1:]
+            else:
+                target_norm = target
+            ent = await self._client.get_entity(target_norm)
+            await self._client(JoinChannelRequest(ent))
+            return str(getattr(ent, "id", target_norm))
+
+        return self._run(_go())
+
+    def leave(self, channel_id: str) -> None:
+        """Leave / unsubscribe from a group or channel."""
+        if not self._client:
+            raise AuthError("not connected; call connect() first")
+        from telethon.tl.functions.channels import LeaveChannelRequest
+
+        async def _go():
+            ent = await self._client.get_entity(int(channel_id))
+            await self._client(LeaveChannelRequest(ent))
+
+        self._run(_go())
+
 
 __all__ = ["TelegramMessenger", "HAS_TELETHON", "DEP_NAME", "INSTALL_HINT"]

@@ -35,13 +35,27 @@ from pathlib import Path
 from typing import Optional
 
 
-VAULT_VERSION = 1
+VAULT_VERSION = 2
+
+# Identity status values. A persona advances pending → confirmed when the
+# operator finishes the signup confirmation step; locked / burned are
+# terminal-ish states.
+STATUS_PENDING = "pending"
+STATUS_CONFIRMED = "confirmed"
+STATUS_LOCKED = "locked"
+STATUS_BURNED = "burned"
+STATUS_VALUES = (STATUS_PENDING, STATUS_CONFIRMED, STATUS_LOCKED, STATUS_BURNED)
 
 
 @dataclass
 class Persona:
     """One stored identity. All fields except ``name`` are optional so a
-    persona can be seeded with just a handle and filled in later."""
+    persona can be seeded with just a handle and filled in later.
+
+    The schema is the union of the original credential-bag fields and the
+    identity-generator fields added in vault v2. Old (v1) vaults round-trip
+    losslessly because ``from_dict`` drops unknown keys and the new fields
+    default to falsy values."""
 
     name: str
     network: str = ""           # tor / i2p / clearnet / lokinet / matrix / ...
@@ -58,6 +72,24 @@ class Persona:
     tags: list[str] = field(default_factory=list)
     created_at: float = field(default_factory=lambda: time.time())
     last_used_at: Optional[float] = None
+
+    # -- identity-generator fields (v2) -----------------------------------
+    provider: Optional[str] = None       # e.g. "protonmail", "mastodon"
+    category: Optional[str] = None       # email / webmail / vpn / social
+    status: str = STATUS_PENDING
+    purpose_tag: Optional[str] = None    # free-form: "research-forum-X"
+    network_or_domain: Optional[str] = None  # mail.proton.me, mastodon.social
+    transport_used: Optional[str] = None  # tor:<iso>, i2p, vpn:<uuid>, proxy:<hash>
+    recovery_email: Optional[str] = None
+    recovery_codes: list[str] = field(default_factory=list)
+    linked_identities: list[str] = field(default_factory=list)
+    display_name: Optional[str] = None
+    birthdate: Optional[str] = None      # YYYY-MM-DD
+    locale: Optional[str] = None         # e.g. en_US, de_DE
+    timezone: Optional[str] = None       # IANA, e.g. Europe/Madrid
+    bio: Optional[str] = None
+    confirmed_at: Optional[float] = None
+    burned_at: Optional[float] = None
 
     @classmethod
     def from_dict(cls, d: dict) -> "Persona":
@@ -366,6 +398,11 @@ def redact_dict(p: Persona, *, reveal: bool = False) -> dict:
             v = d.get(k)
             if v:
                 d[k] = "*" * 6 + " (--reveal to show)"
+        codes = d.get("recovery_codes") or []
+        if codes:
+            d["recovery_codes"] = [
+                "*" * 6 + " (--reveal to show)"
+            ] * len(codes)
     return d
 
 
@@ -373,6 +410,11 @@ __all__ = [
     "Persona",
     "Vault",
     "VAULT_VERSION",
+    "STATUS_PENDING",
+    "STATUS_CONFIRMED",
+    "STATUS_LOCKED",
+    "STATUS_BURNED",
+    "STATUS_VALUES",
     "default_dir",
     "vault_path",
     "cookie_jar_for",

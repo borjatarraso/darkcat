@@ -232,6 +232,25 @@ class SimplexMessenger(Messenger):
             ))
         return out
 
+    def connect_link(self, invite_link: str) -> str:
+        """Accept a SimpleX contact invitation.
+
+        Pass a ``https://simplex.chat/contact#...`` or ``simplex:/...``
+        link from the peer. Returns the daemon's raw response (already
+        decoded JSON) summarised as a one-line description."""
+        if not self._ws:
+            raise AuthError("not connected")
+        invite_link = invite_link.strip()
+        resp = self._ws.cmd(f"/connect {invite_link}")
+        # SimpleX responses are nested under .resp; surface a short
+        # readable summary the CLI can show without dumping JSON.
+        right = resp.get("resp", {}).get("Right", {})
+        if not right:
+            err = resp.get("resp", {}).get("Left") or resp
+            raise AuthError(f"simplex /connect failed: {err}")
+        kind = next(iter(right.keys()), "ok")
+        return f"{kind}: invitation accepted"
+
     def send(self, channel_id: str, text: str) -> ChatMessage:
         if not self._ws:
             raise AuthError("not connected")

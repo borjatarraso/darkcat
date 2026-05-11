@@ -528,6 +528,1397 @@ class WelcomeScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ResultScreen(ModalScreen[None]):
+    """Generic scrollable text dump — used wherever we want to render the
+    captured stdout from `invoke_cli_capturing` without truncating it
+    into a notify. The body is fixed-width so tables align."""
+
+    BINDINGS = [
+        Binding("escape", "close", "close", show=True),
+        Binding("q",      "close", "close", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ResultScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    ResultScreen #card {
+        width: 100; max-width: 95%; height: auto; max-height: 90%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    ResultScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    ResultScreen RichLog { background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; height: auto; max-height: 32; }
+    ResultScreen #close-row { height: 3; padding-top: 1; align-horizontal: right; }
+    """
+
+    def __init__(self, title: str, body: str) -> None:
+        super().__init__()
+        self._title = title
+        self._body = body
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="card"):
+            yield Static(self._title, id="title")
+            log = RichLog(highlight=False, markup=False, wrap=False)
+            yield log
+            with Horizontal(id="close-row"):
+                yield Button("Close", id="close", variant="default")
+
+    def on_mount(self) -> None:
+        log = self.query_one(RichLog)
+        for line in self._body.splitlines() or ["(no output)"]:
+            log.write(line)
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+
+class LinkScreen(ModalScreen[Optional[dict]]):
+    """Sub-modal: pick parent + child personas for `identity link`.
+
+    Returns ``{'parent','child'}`` on submit, ``None`` on cancel. The
+    parent is the recovery account (e.g. ProtonMail used to confirm a
+    Reddit signup); the child is the protected one.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("enter",  "submit", "submit", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    LinkScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    LinkScreen #card {
+        width: 64; max-width: 90%; height: auto;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    LinkScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    LinkScreen Label { color: #5c8c70; padding-top: 1; }
+    LinkScreen Select { background: #0a1108; color: #00ff66; border: solid #5c8c70; }
+    LinkScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    """
+
+    def __init__(self, names: list[str], default_child: Optional[str] = None,
+                 verb: str = "Link") -> None:
+        super().__init__()
+        self._names = names
+        self._default_child = default_child
+        self._verb = verb
+
+    def compose(self) -> ComposeResult:
+        options = [(n, n) for n in self._names]
+        with Vertical(id="card"):
+            yield Static(f"{self._verb} identities", id="title")
+            yield Static(
+                "Parent = the recovery account (e.g. ProtonMail). "
+                "Child = the protected one (e.g. Reddit).",
+                id="hint",
+            )
+            yield Label("Parent")
+            yield Select(options, id="parent",
+                         value=options[0][1] if options else "",
+                         allow_blank=False)
+            yield Label("Child")
+            yield Select(
+                options, id="child",
+                value=self._default_child or (options[0][1] if options else ""),
+                allow_blank=False,
+            )
+            with Horizontal(id="buttons"):
+                yield Button(self._verb, id="submit", variant="success")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_submit()
+        else:
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        parent = self.query_one("#parent", Select).value
+        child = self.query_one("#child", Select).value
+        if not parent or not child or parent == child:
+            return
+        self.dismiss({"parent": parent, "child": child})
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class PassphraseScreen(ModalScreen[Optional[str]]):
+    """Single-shot passphrase prompt for an encrypted vault. Returns the
+    typed string on submit or ``None`` on cancel."""
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("enter",  "submit", "submit", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    PassphraseScreen { align: center middle; background: rgba(0,0,0,0.8); }
+    PassphraseScreen #card {
+        width: 56; height: auto;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    PassphraseScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    PassphraseScreen Label { color: #5c8c70; padding-top: 1; }
+    PassphraseScreen Input { background: #0a1108; color: #00ff66; border: solid #5c8c70; }
+    PassphraseScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    """
+
+    def __init__(self, prompt: str = "Vault passphrase") -> None:
+        super().__init__()
+        self._prompt = prompt
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="card"):
+            yield Static(self._prompt, id="title")
+            yield Label("Passphrase")
+            yield Input(password=True, id="passphrase")
+            with Horizontal(id="buttons"):
+                yield Button("Unlock", id="submit", variant="success")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_mount(self) -> None:
+        self.query_one(Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_submit()
+        else:
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        pw = self.query_one(Input).value
+        if not pw:
+            return
+        self.dismiss(pw)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class IdentityNewScreen(ModalScreen[Optional[dict]]):
+    """Sub-modal: collect provider / purpose / transport for a new identity.
+
+    Returns a dict ``{'provider', 'purpose', 'transport'}`` on submit, or
+    ``None`` on cancel. The parent screen does the actual vault work so
+    error handling stays in one place.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("enter",  "submit", "submit", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    IdentityNewScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    IdentityNewScreen #card {
+        width: 60; max-width: 90%; height: auto;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    IdentityNewScreen #title {
+        color: #00e5ff; text-style: bold; padding-bottom: 1;
+    }
+    IdentityNewScreen Label { color: #5c8c70; padding-top: 1; }
+    IdentityNewScreen Input, IdentityNewScreen Select {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    IdentityNewScreen #buttons {
+        height: 3; padding-top: 1; align-horizontal: center;
+    }
+    """
+
+    def compose(self) -> ComposeResult:
+        from darkcat.identity import providers as provreg
+        provreg.load_all()
+        provider_options = [
+            (f"{p.display_name} ({p.category})", p.slug)
+            for p in sorted(provreg.registered(), key=lambda x: x.slug)
+        ]
+        with Vertical(id="card"):
+            yield Static("New identity", id="title")
+            yield Label("Provider")
+            yield Select(provider_options, id="provider", allow_blank=False)
+            yield Label("Instance (host)")
+            yield Select(
+                [("(default / N/A)", "")],
+                id="instance", value="", allow_blank=False,
+            )
+            yield Label("Transport")
+            yield Select(
+                [("Tor", "tor"), ("I2P", "i2p"), ("Proxy", "proxy")],
+                id="transport", value="tor", allow_blank=False,
+            )
+            yield Label("Purpose tag (optional)")
+            yield Input(placeholder="e.g. research-forum-X", id="purpose")
+            with Horizontal(id="buttons"):
+                yield Button("Create", id="submit", variant="success")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_mount(self) -> None:
+        # Populate the instance picker for whichever provider is selected
+        # by default so users see the choices without first re-picking the
+        # provider.
+        provider = self.query_one("#provider", Select).value
+        if provider:
+            self._refresh_instances(str(provider))
+
+    def on_select_changed(self, event: Select.Changed) -> None:
+        if event.select.id == "provider" and event.value:
+            self._refresh_instances(str(event.value))
+
+    def _refresh_instances(self, provider_slug: str) -> None:
+        from darkcat.identity import providers as provreg
+        prof = provreg.get(provider_slug)
+        sel = self.query_one("#instance", Select)
+        if prof is None or not prof.instances:
+            sel.set_options([("(default / N/A)", "")])
+            sel.value = ""
+            return
+        opts: list[tuple[str, str]] = [("(provider default)", "")]
+        for suffix, _url, note in prof.instances:
+            label = f"{suffix} — {note}" if note else suffix
+            opts.append((label, suffix))
+        sel.set_options(opts)
+        sel.value = ""
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_submit()
+        else:
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        provider = self.query_one("#provider", Select).value
+        transport = self.query_one("#transport", Select).value
+        purpose = self.query_one("#purpose", Input).value.strip() or None
+        instance = self.query_one("#instance", Select).value or None
+        if not provider or not transport:
+            return
+        self.dismiss({
+            "provider": provider, "transport": transport,
+            "purpose": purpose, "instance": instance,
+        })
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class IdentityEditScreen(ModalScreen[Optional[dict]]):
+    """Sub-modal: edit credential fields on an existing identity.
+
+    Returns ``None`` on cancel, otherwise a dict whose keys map 1:1 onto
+    the ``identity edit`` CLI flags. Only keys whose values were changed
+    are included so the dispatcher can decide what to forward.
+    """
+
+    BINDINGS = [
+        Binding("escape", "cancel", "cancel", show=True),
+        Binding("enter",  "submit", "submit", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    IdentityEditScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    IdentityEditScreen #card {
+        width: 72; max-width: 95%; height: auto;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    IdentityEditScreen #title {
+        color: #00e5ff; text-style: bold; padding-bottom: 1;
+    }
+    IdentityEditScreen Label { color: #5c8c70; padding-top: 1; }
+    IdentityEditScreen Input {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    IdentityEditScreen #buttons {
+        height: 3; padding-top: 1; align-horizontal: center;
+    }
+    IdentityEditScreen #note {
+        color: #5c8c70; padding-bottom: 1;
+    }
+    """
+
+    def __init__(self, persona) -> None:
+        super().__init__()
+        self.persona = persona
+
+    def compose(self) -> ComposeResult:
+        p = self.persona
+        with Vertical(id="card"):
+            yield Static(f"Edit credentials — {p.name}", id="title")
+            yield Static(
+                "Leave a field unchanged to keep the current value. "
+                "Empty strings on optional fields clear them. New "
+                "recovery codes are appended (comma-separated).",
+                id="note",
+            )
+            yield Label("Handle / username")
+            yield Input(value=p.handle or "", id="handle")
+            yield Label("Email")
+            yield Input(value=p.email or "", id="email")
+            yield Label("Recovery email")
+            yield Input(value=p.recovery_email or "", id="recovery_email")
+            yield Label("Display name")
+            yield Input(value=p.display_name or "", id="display_name")
+            yield Label("Recovery phrase / BIP-39")
+            yield Input(value=p.recovery or "", id="recovery", password=True)
+            yield Label(
+                f"Add recovery codes (current: {len(p.recovery_codes)})"
+            )
+            yield Input(placeholder="aaa-bbb, ccc-ddd", id="recovery_codes")
+            yield Label("Notes")
+            yield Input(value=p.notes or "", id="notes")
+            with Horizontal(id="buttons"):
+                yield Button("Save", id="submit", variant="success")
+                yield Button("Rotate password", id="rotate", variant="warning")
+                yield Button("Cancel", id="cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_submit()
+        elif event.button.id == "rotate":
+            self.dismiss({"_action": "rotate-password"})
+        else:
+            self.action_cancel()
+
+    def action_submit(self) -> None:
+        p = self.persona
+        payload: dict[str, object] = {"_action": "edit"}
+
+        def _changed(field_id: str, current: Optional[str]) -> Optional[str]:
+            new = self.query_one(f"#{field_id}", Input).value
+            cur = current or ""
+            if new == cur:
+                return None
+            return new
+
+        for fid, cur in (
+            ("handle",         p.handle),
+            ("email",          p.email),
+            ("recovery_email", p.recovery_email),
+            ("display_name",   p.display_name),
+            ("recovery",       p.recovery),
+            ("notes",          p.notes),
+        ):
+            v = _changed(fid, cur)
+            if v is not None:
+                payload[fid] = v
+
+        codes_raw = self.query_one("#recovery_codes", Input).value.strip()
+        if codes_raw:
+            payload["recovery_codes"] = [
+                c.strip() for c in codes_raw.split(",") if c.strip()
+            ]
+
+        if len(payload) == 1:  # nothing besides the _action marker
+            self.dismiss(None)
+            return
+        self.dismiss(payload)
+
+    def action_cancel(self) -> None:
+        self.dismiss(None)
+
+
+class IdentityScreen(ModalScreen[None]):
+    """Identity vault browser — list / new / confirm / burn.
+
+    Reads the persona vault (plain mode only — encrypted vaults stay
+    CLI-only for now since prompting for a passphrase inside a Textual
+    modal needs more plumbing). Highlights the selected row; n/c/b act
+    on it.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close",   "close",   show=True),
+        Binding("q",      "close",   "close",   show=False),
+        Binding("n",      "new",     "new",     show=True),
+        Binding("l",      "launch",  "launch",  show=True),
+        Binding("c",      "confirm", "confirm", show=True),
+        Binding("s",      "show",    "show",    show=True),
+        Binding("e",      "edit",    "edit",    show=True),
+        Binding("i",      "link",    "link",    show=True),
+        Binding("u",      "unlink",  "unlink",  show=True),
+        Binding("b",      "burn",    "burn",    show=True),
+        Binding("r",      "refresh", "refresh", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    IdentityScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    IdentityScreen #card {
+        width: 100; max-width: 95%; height: auto; max-height: 90%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    IdentityScreen #title {
+        color: #00e5ff; text-style: bold; padding-bottom: 1;
+    }
+    IdentityScreen #hint {
+        color: #5c8c70; padding-top: 1;
+    }
+    IdentityScreen DataTable {
+        background: #0a1108; color: #00ff66;
+        border: solid #5c8c70;
+    }
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        super().__init__()
+        self.cfg = cfg
+        # Cached vault passphrase for the duration of the screen — set
+        # lazily by the PassphraseScreen the first time we encounter an
+        # encrypted vault. Cleared on dismiss.
+        self._passphrase: Optional[str] = None
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="card"):
+            yield Static("Identities", id="title")
+            yield DataTable(id="id-table", cursor_type="row")
+            yield Static(
+                "[#00e5ff]N[/]ew  [#00e5ff]L[/]aunch  [#00e5ff]C[/]onfirm  "
+                "[#00e5ff]S[/]how  [#00e5ff]E[/]dit  "
+                "L[#00e5ff]i[/]nk  [#00e5ff]U[/]nlink  "
+                "[#00e5ff]B[/]urn  [#00e5ff]R[/]efresh  [#00e5ff]Esc[/] close",
+                id="hint", markup=True,
+            )
+
+    def on_mount(self) -> None:
+        t = self.query_one(DataTable)
+        t.add_columns("NAME", "PROVIDER", "STATUS", "PURPOSE", "CREATED")
+        self._unlock_then(self._refresh)
+
+    # ---- vault helpers ---------------------------------------------------
+
+    def _vault_is_encrypted(self) -> bool:
+        from darkcat import personas as pv
+        path = pv.vault_path()
+        return path.exists() and path.suffix == ".gpg"
+
+    def _open_inner_or_notify(self):
+        """Best-effort vault open using the cached passphrase. Returns
+        the inner Vault on success, or None after pushing a notify."""
+        from darkcat import personas as pv
+        try:
+            return pv.Vault(path=pv.vault_path(),
+                            passphrase=self._passphrase)
+        except RuntimeError as e:
+            self.notify(f"could not open vault: {e}",
+                        severity="error", timeout=6)
+            return None
+
+    def _unlock_then(self, callback) -> None:
+        """If the vault is encrypted and we don't yet have a passphrase,
+        push the PassphraseScreen and invoke ``callback`` once the user
+        provides one that decrypts. Otherwise call ``callback`` directly.
+        Wrong-passphrase loops re-prompt until cancel."""
+        if not self._vault_is_encrypted() or self._passphrase is not None:
+            callback()
+            return
+
+        def _on_pw(pw: Optional[str]) -> None:
+            if pw is None:
+                self.notify("vault locked — close and reopen to retry",
+                            severity="warning", timeout=4)
+                return
+            # Verify before caching, so a typo doesn't poison the session.
+            from darkcat import personas as pv
+            try:
+                pv.Vault(path=pv.vault_path(), passphrase=pw)
+            except RuntimeError as e:
+                self.notify(f"wrong passphrase: {e}",
+                            severity="error", timeout=4)
+                # Re-prompt by recursing through the screen stack.
+                self._unlock_then(callback)
+                return
+            self._passphrase = pw
+            callback()
+
+        self.app.push_screen(PassphraseScreen("Vault is encrypted"), _on_pw)
+
+    def _refresh(self) -> None:
+        from darkcat.identity import IdentityVault
+        inner = self._open_inner_or_notify()
+        if inner is None:
+            return
+        vault = IdentityVault(inner)
+        rows = vault.all_identities()
+        t = self.query_one(DataTable)
+        t.clear()
+        if not rows:
+            return
+        for p in rows:
+            created = time.strftime("%Y-%m-%d", time.localtime(p.created_at))
+            t.add_row(
+                p.name, p.provider or "-", p.status,
+                p.purpose_tag or "-", created,
+                key=p.name,
+            )
+
+    def _selected_name(self) -> Optional[str]:
+        t = self.query_one(DataTable)
+        if t.row_count == 0:
+            return None
+        try:
+            row_key = t.coordinate_to_cell_key(t.cursor_coordinate).row_key
+        except Exception:
+            return None
+        return str(row_key.value) if row_key.value else None
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_refresh(self) -> None:
+        self._refresh()
+
+    def action_new(self) -> None:
+        def _on_done(payload: Optional[dict]) -> None:
+            if not payload:
+                return
+            self._create_identity(**payload)
+        self.app.push_screen(IdentityNewScreen(), _on_done)
+
+    def _run(self, ns) -> tuple[int, str, str]:
+        """Invoke ``cmd_identity`` with stdout / stderr captured.
+
+        Returns ``(rc, stdout, stderr)``. Used so failures (cap exceeded,
+        duplicate name, missing provider) surface as a Textual notify
+        rather than vanishing under the alt-screen. The cached
+        passphrase (if any) is exposed to the CLI handler via the same
+        ``DARKCAT_VAULT_PASSPHRASE`` env var the CLI itself honors, so
+        encrypted vaults work end-to-end without re-prompting.
+        """
+        import os as _os
+        from darkcat.identity import invoke_cli_capturing
+        saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+        if self._passphrase is not None:
+            _os.environ["DARKCAT_VAULT_PASSPHRASE"] = self._passphrase
+        try:
+            return invoke_cli_capturing(self.cfg, ns)
+        except SystemExit as e:
+            return (int(e.code) if isinstance(e.code, int) else 2, "", "")
+        except Exception as e:
+            return (2, "", f"{type(e).__name__}: {e}")
+        finally:
+            if self._passphrase is not None:
+                if saved is None:
+                    _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
+                else:
+                    _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+
+    @staticmethod
+    def _last_error_line(stderr: str) -> str:
+        for line in reversed(stderr.splitlines()):
+            line = line.strip()
+            if line:
+                return line
+        return "operation failed"
+
+    def _create_identity(
+        self,
+        *,
+        provider: str,
+        transport: str,
+        purpose: Optional[str],
+        instance: Optional[str] = None,
+    ) -> None:
+        import argparse as _argparse
+        ns = _argparse.Namespace(
+            cmd="identity", action="new",
+            provider=provider, transport=transport, purpose=purpose,
+            name=None, instance=instance, recovery_email=None,
+            cap=None, force=False, password_length=24,
+            proxy_url=None, pin_to=None,
+            launch=False, json=False,
+        )
+        rc, _out, err = self._run(ns)
+        if rc == 0:
+            label = f"{provider} ({instance})" if instance else provider
+            self.notify(f"created identity for {label}", timeout=3)
+        else:
+            self.notify(self._last_error_line(err),
+                        severity="error", timeout=6)
+        self._refresh()
+
+    def action_confirm(self) -> None:
+        name = self._selected_name()
+        if not name:
+            self.notify("select a row first", severity="warning", timeout=3)
+            return
+        import argparse as _argparse
+        ns = _argparse.Namespace(cmd="identity", action="confirm", name=name)
+        rc, _out, err = self._run(ns)
+        if rc == 0:
+            self.notify(f"confirmed {name}", timeout=3)
+        else:
+            self.notify(self._last_error_line(err),
+                        severity="error", timeout=6)
+        self._refresh()
+
+    def action_burn(self) -> None:
+        name = self._selected_name()
+        if not name:
+            self.notify("select a row first", severity="warning", timeout=3)
+            return
+        import argparse as _argparse
+        ns = _argparse.Namespace(
+            cmd="identity", action="burn", name=name, note=None,
+        )
+        rc, _out, err = self._run(ns)
+        if rc == 0:
+            self.notify(f"burned {name}", timeout=3, severity="warning")
+        else:
+            self.notify(self._last_error_line(err),
+                        severity="error", timeout=6)
+        self._refresh()
+
+    def action_edit(self) -> None:
+        name = self._selected_name()
+        if not name:
+            self.notify("select a row first", severity="warning", timeout=3)
+            return
+
+        def _go() -> None:
+            inner = self._open_inner_or_notify()
+            if inner is None:
+                return
+            p = inner.get(name)
+            if p is None:
+                self.notify(f"{name!r} no longer in vault",
+                            severity="error", timeout=5)
+                self._refresh()
+                return
+
+            def _on_done(payload: Optional[dict]) -> None:
+                if not payload:
+                    return
+                self._apply_edit(name, payload)
+
+            self.app.push_screen(IdentityEditScreen(p), _on_done)
+
+        self._unlock_then(_go)
+
+    def _apply_edit(self, name: str, payload: dict) -> None:
+        import argparse as _argparse
+        action = payload.pop("_action", "edit")
+        if action == "rotate-password":
+            ns = _argparse.Namespace(
+                cmd="identity", action="rotate-password",
+                name=name, length=24, print_new=False,
+            )
+            rc, _out, err = self._run(ns)
+            if rc == 0:
+                self.notify(f"rotated password for {name}", timeout=3)
+            else:
+                self.notify(self._last_error_line(err),
+                            severity="error", timeout=6)
+            self._refresh()
+            return
+
+        ns = _argparse.Namespace(
+            cmd="identity", action="edit", name=name,
+            handle=payload.get("handle"),
+            email=payload.get("email"),
+            recovery=payload.get("recovery"),
+            recovery_email=payload.get("recovery_email"),
+            recovery_codes=payload.get("recovery_codes"),
+            recovery_codes_replace=False,
+            display_name=payload.get("display_name"),
+            notes=payload.get("notes"),
+        )
+        rc, _out, err = self._run(ns)
+        if rc == 0:
+            self.notify(f"updated {name}", timeout=3)
+        else:
+            self.notify(self._last_error_line(err),
+                        severity="error", timeout=6)
+        self._refresh()
+
+    def action_launch(self) -> None:
+        name = self._selected_name()
+        if not name:
+            self.notify("select a row first", severity="warning", timeout=3)
+            return
+        import argparse as _argparse
+        # capture=False here — the CLI capture path is interactive
+        # readline, which doesn't compose with Textual. We push the
+        # IdentityEditScreen below instead so the operator can fill in
+        # the real handle / recovery codes via the same TUI surface.
+        ns = _argparse.Namespace(
+            cmd="identity", action="launch", name=name,
+            no_spawn=False, capture=False,
+        )
+        rc, out, err = self._run(ns)
+        if rc != 0:
+            self.notify(self._last_error_line(err),
+                        severity="error", timeout=6)
+            return
+
+        # First: dump the launch block so the operator can read the
+        # signup-flow checklist while completing the form.
+        self.app.push_screen(ResultScreen(
+            f"Signup launched — {name}", out or "(launched)",
+        ))
+
+        # Then: open the edit form for the same persona so the values
+        # the provider just showed once (handle, recovery codes,
+        # recovery email) can be captured before they're lost.
+        def _go() -> None:
+            inner = self._open_inner_or_notify()
+            if inner is None:
+                return
+            p = inner.get(name)
+            if p is None:
+                return
+
+            def _on_done(payload: Optional[dict]) -> None:
+                if not payload:
+                    return
+                self._apply_edit(name, payload)
+
+            self.app.push_screen(IdentityEditScreen(p), _on_done)
+
+        # call_later so the ResultScreen is on top first; the edit
+        # screen pops up underneath, ready when the operator dismisses
+        # the launch block with Escape.
+        self.call_later(self._unlock_then, _go)
+
+    def action_show(self) -> None:
+        name = self._selected_name()
+        if not name:
+            self.notify("select a row first", severity="warning", timeout=3)
+            return
+
+        def _go(reveal: bool) -> None:
+            import argparse as _argparse
+            ns = _argparse.Namespace(
+                cmd="identity", action="show", name=name,
+                reveal=reveal, json=False,
+            )
+            rc, out, err = self._run(ns)
+            if rc != 0:
+                self.notify(self._last_error_line(err),
+                            severity="error", timeout=6)
+                return
+            title = (f"{name} (revealed — handle with care)"
+                     if reveal else f"{name} (masked — press R to reveal)")
+            self.app.push_screen(ResultScreen(title, out or "(no data)"))
+
+        def _on_confirm(yes: bool) -> None:
+            _go(reveal=yes)
+
+        # Two-step: first ask whether to reveal secrets. Plain show is
+        # always safe; reveal needs an explicit yes since the password
+        # and recovery codes hit the screen.
+        self.app.push_screen(
+            ConfirmRevealScreen(name),
+            _on_confirm,
+        )
+
+    def action_link(self) -> None:
+        self._link_or_unlink(verb="link")
+
+    def action_unlink(self) -> None:
+        self._link_or_unlink(verb="unlink")
+
+    def _link_or_unlink(self, *, verb: str) -> None:
+        def _go() -> None:
+            inner = self._open_inner_or_notify()
+            if inner is None:
+                return
+            names = [
+                p.name for p in inner.personas
+                if p.provider  # only identity rows
+            ]
+            if len(names) < 2:
+                self.notify(
+                    "need at least two identities to link",
+                    severity="warning", timeout=4,
+                )
+                return
+            default_child = self._selected_name()
+
+            def _on_picked(payload: Optional[dict]) -> None:
+                if not payload:
+                    return
+                import argparse as _argparse
+                ns = _argparse.Namespace(
+                    cmd="identity", action=verb,
+                    parent=payload["parent"], child=payload["child"],
+                )
+                rc, _out, err = self._run(ns)
+                if rc == 0:
+                    self.notify(
+                        f"{verb}ed {payload['parent']} → {payload['child']}",
+                        timeout=3,
+                    )
+                else:
+                    self.notify(self._last_error_line(err),
+                                severity="error", timeout=6)
+
+            self.app.push_screen(
+                LinkScreen(names, default_child=default_child,
+                           verb=verb.capitalize()),
+                _on_picked,
+            )
+
+        self._unlock_then(_go)
+
+
+class ConfirmRevealScreen(ModalScreen[bool]):
+    """Two-button modal: reveal secrets or just show masked view.
+
+    Returns ``True`` to reveal (password + recovery codes in plaintext),
+    ``False`` for the masked view. Dismissing with Escape is treated as
+    "masked" — never accidentally reveal.
+    """
+
+    BINDINGS = [
+        Binding("escape", "no",  "masked",  show=True),
+        Binding("y",      "yes", "reveal",  show=True),
+        Binding("n",      "no",  "masked",  show=True),
+    ]
+
+    DEFAULT_CSS = """
+    ConfirmRevealScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    ConfirmRevealScreen #card {
+        width: 60; height: auto;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    ConfirmRevealScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    ConfirmRevealScreen #body { color: #5c8c70; padding-bottom: 1; }
+    ConfirmRevealScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    """
+
+    def __init__(self, name: str) -> None:
+        super().__init__()
+        self._name = name
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="card"):
+            yield Static(f"Show {self._name}", id="title")
+            yield Static(
+                "Reveal password and recovery codes in plaintext on screen? "
+                "Choose 'Masked' if anyone is shoulder-surfing.",
+                id="body",
+            )
+            with Horizontal(id="buttons"):
+                yield Button("Masked", id="masked", variant="default")
+                yield Button("Reveal", id="reveal", variant="warning")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        self.dismiss(event.button.id == "reveal")
+
+    def action_yes(self) -> None:
+        self.dismiss(True)
+
+    def action_no(self) -> None:
+        self.dismiss(False)
+
+
+class ChatScreen(ModalScreen[None]):
+    """Chat console — pick persona, action, fields → invoke ``cmd_chat``.
+
+    Covers every action the CLI exposes: backends, login, list, read,
+    send, ingest, join (Telegram), leave (Telegram), connect (SimpleX),
+    addcontact (Session). Output is rendered in a RichLog at the bottom
+    so multi-line tables and error blocks survive intact.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "close", show=True),
+        Binding("ctrl+enter", "run", "run", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    ChatScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    ChatScreen #card {
+        width: 110; max-width: 96%; height: auto; max-height: 92%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    ChatScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    ChatScreen Label { color: #5c8c70; padding-top: 1; }
+    ChatScreen Input, ChatScreen Select {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    ChatScreen RichLog {
+        height: 14; background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; margin-top: 1;
+    }
+    ChatScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    ChatScreen #presets { height: 3; padding-top: 1; align-horizontal: center; }
+    ChatScreen #presets Button { margin: 0 1; }
+    """
+
+    # Quick-action presets — one click sets network + action so the
+    # operator doesn't have to navigate two dropdowns for the common
+    # verbs. Tuple shape: (button_label, button_id, network, action).
+    _PRESETS = (
+        ("Telegram Join",   "preset-tg-join",      "telegram", "join"),
+        ("Telegram Leave",  "preset-tg-leave",     "telegram", "leave"),
+        ("Add Session",     "preset-session-add",  "session",  "addcontact"),
+        ("Accept SimpleX",  "preset-simplex-conn", "simplex",  "connect"),
+        ("Login",           "preset-login",        "",         "login"),
+        ("List",            "preset-list",         "",         "list"),
+        ("Backends",        "preset-backends",     "",         "backends"),
+    )
+
+    _ACTIONS = (
+        ("backends — list installed chat backends", "backends"),
+        ("login — authenticate this persona", "login"),
+        ("list — channels / DMs / groups", "list"),
+        ("read — last N messages from a channel", "read"),
+        ("send — post a message to a channel", "send"),
+        ("ingest — store channel history in DB", "ingest"),
+        ("join — Telegram public/private join", "join"),
+        ("leave — Telegram leave by id", "leave"),
+        ("connect — SimpleX accept invite link", "connect"),
+        ("addcontact — Session add peer ID", "addcontact"),
+    )
+
+    def __init__(self, cfg: Config) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+    def compose(self) -> ComposeResult:
+        from darkcat import personas as pv
+        # Best-effort persona list; encrypted vaults fall back to an empty
+        # list and a free-form Input so the screen still works.
+        persona_options: list[tuple[str, str]] = []
+        try:
+            path = pv.vault_path()
+            if path.exists() and path.suffix != ".gpg":
+                v = pv.Vault(path=path)
+                for p in v.personas:
+                    persona_options.append((f"{p.name} ({p.network or '-'})", p.name))
+        except Exception:
+            pass
+
+        with Vertical(id="card"):
+            yield Static("Chat console", id="title")
+            yield Label("Quick actions")
+            with Horizontal(id="presets"):
+                for label, btn_id, _net, _act in self._PRESETS:
+                    yield Button(label, id=btn_id, variant="primary")
+            yield Label("Persona")
+            if persona_options:
+                yield Select(persona_options, id="persona", allow_blank=False)
+            else:
+                yield Input(placeholder="persona name", id="persona-text")
+            yield Label("Network (overrides persona)")
+            yield Select(
+                [("(persona default)", ""),
+                 ("telegram", "telegram"),
+                 ("matrix", "matrix"),
+                 ("xmpp", "xmpp"),
+                 ("simplex", "simplex"),
+                 ("session", "session")],
+                value="", id="network", allow_blank=False,
+            )
+            yield Label("Action")
+            yield Select(list(self._ACTIONS), id="action",
+                         value="list", allow_blank=False)
+            yield Label("Target / channel id / invite link / peer id")
+            yield Input(placeholder="@channel | -100… | direct:42 | 05<hex> | https://t.me/+…",
+                        id="target")
+            yield Label("Message body (for `send`) — or limit/N for read/ingest")
+            yield Input(placeholder="hello", id="body")
+            yield RichLog(id="chat-log", highlight=True, markup=True, wrap=True)
+            with Horizontal(id="buttons"):
+                yield Button("Run", id="submit", variant="success")
+                yield Button("Close", id="cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        bid = event.button.id or ""
+        if bid == "submit":
+            self.action_run()
+            return
+        if bid == "cancel":
+            self.action_close()
+            return
+        if bid.startswith("preset-"):
+            for _label, preset_id, net, act in self._PRESETS:
+                if preset_id == bid:
+                    self._apply_preset(net, act)
+                    return
+
+    def _apply_preset(self, network: str, action: str) -> None:
+        """Pre-fill the network + action dropdowns from one click."""
+        try:
+            self.query_one("#network", Select).value = network
+        except Exception:
+            pass
+        try:
+            self.query_one("#action", Select).value = action
+        except Exception:
+            pass
+        try:
+            log = self.query_one("#chat-log", RichLog)
+            hint = {
+                "join":       "expects @channel | https://t.me/+invite | numeric id",
+                "leave":      "expects numeric channel id",
+                "addcontact": "expects 66-hex Session ID; body = optional nickname",
+                "connect":    "expects https://simplex.chat/contact#... or simplex:/...",
+                "login":      "no target needed; press Run",
+                "list":       "no target needed; press Run",
+                "backends":   "no target needed; press Run",
+            }.get(action, "")
+            if hint:
+                log.write(f"[#00e5ff]hint:[/] {hint}")
+        except Exception:
+            pass
+        try:
+            if action in ("login", "list", "backends"):
+                self.query_one("#submit", Button).focus()
+            else:
+                self.query_one("#target", Input).focus()
+        except Exception:
+            pass
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def _persona(self) -> str:
+        try:
+            return self.query_one("#persona", Select).value or ""
+        except Exception:
+            try:
+                return self.query_one("#persona-text", Input).value.strip()
+            except Exception:
+                return ""
+
+    def action_run(self) -> None:
+        from darkcat.identity import invoke_cli_capturing
+        import argparse as _argparse
+
+        persona = self._persona()
+        action = self.query_one("#action", Select).value or "list"
+        network = self.query_one("#network", Select).value or None
+        target = self.query_one("#target", Input).value.strip()
+        body = self.query_one("#body", Input).value.strip()
+
+        log = self.query_one("#chat-log", RichLog)
+        if not persona and action != "backends":
+            log.write("[red]error:[/] persona is required")
+            return
+
+        ns_kwargs: dict = {"cmd": "chat", "action": action, "persona": persona,
+                           "network": network, "json": False}
+        if action == "backends":
+            pass
+        elif action == "login":
+            pass
+        elif action == "list":
+            ns_kwargs["limit"] = 100
+        elif action == "read":
+            try:
+                ns_kwargs["limit"] = int(body) if body else 30
+            except ValueError:
+                ns_kwargs["limit"] = 30
+            ns_kwargs["channel_id"] = target
+        elif action == "send":
+            ns_kwargs["channel_id"] = target
+            ns_kwargs["message"] = body
+        elif action == "ingest":
+            try:
+                ns_kwargs["limit"] = int(body) if body else 200
+            except ValueError:
+                ns_kwargs["limit"] = 200
+            ns_kwargs["channel_id"] = target
+        elif action == "join":
+            ns_kwargs["target"] = target
+        elif action == "leave":
+            ns_kwargs["channel_id"] = target
+        elif action == "connect":
+            ns_kwargs["invite_link"] = target
+        elif action == "addcontact":
+            ns_kwargs["peer_session_id"] = target
+            ns_kwargs["name"] = body or None
+
+        ns = _argparse.Namespace(**ns_kwargs)
+        try:
+            rc, out, err = invoke_cli_capturing(self.cfg, ns)
+        except SystemExit as e:
+            rc = int(e.code) if isinstance(e.code, int) else 2
+            out, err = "", ""
+        except Exception as e:
+            rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+
+        if out:
+            log.write(out.rstrip())
+        if err:
+            log.write(f"[red]{err.rstrip()}[/]")
+        log.write(f"[#5c8c70]-- exit {rc} --[/]")
+
+
+class MailScreen(ModalScreen[None]):
+    """Mail console — send and check email via persona SMTP/IMAP."""
+
+    BINDINGS = [
+        Binding("escape", "close", "close", show=True),
+        Binding("ctrl+enter", "run", "run", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    MailScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    MailScreen #card {
+        width: 110; max-width: 96%; height: auto; max-height: 92%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    MailScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    MailScreen Label { color: #5c8c70; padding-top: 1; }
+    MailScreen Input, MailScreen Select {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    MailScreen RichLog {
+        height: 14; background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; margin-top: 1;
+    }
+    MailScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    """
+
+    def __init__(self, cfg: Config) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+    def compose(self) -> ComposeResult:
+        from darkcat import personas as pv
+        persona_options: list[tuple[str, str]] = []
+        try:
+            path = pv.vault_path()
+            if path.exists() and path.suffix != ".gpg":
+                v = pv.Vault(path=path)
+                persona_options = [(f"{p.name} ({p.site or '-'})", p.name)
+                                   for p in v.personas]
+        except Exception:
+            pass
+
+        with Vertical(id="card"):
+            yield Static("Mail console", id="title")
+            yield Label("Persona")
+            if persona_options:
+                yield Select(persona_options, id="persona", allow_blank=False)
+            else:
+                yield Input(placeholder="persona name", id="persona-text")
+            yield Label("Action")
+            yield Select(
+                [("send — compose and send", "send"),
+                 ("check — recent INBOX headers", "check")],
+                value="send", id="action", allow_blank=False,
+            )
+            yield Label("To (comma-separated)")
+            yield Input(placeholder="alice@example.com, bob@example.com", id="to")
+            yield Label("Subject (send) / folder (check)")
+            yield Input(placeholder="hello / INBOX", id="subject")
+            yield Label("Body (send) / limit (check, default 25)")
+            yield Input(placeholder="message text or 25", id="body")
+            yield RichLog(id="mail-log", highlight=True, markup=True, wrap=True)
+            with Horizontal(id="buttons"):
+                yield Button("Run", id="submit", variant="success")
+                yield Button("Close", id="cancel", variant="default")
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_run()
+        else:
+            self.action_close()
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def _persona(self) -> str:
+        try:
+            return self.query_one("#persona", Select).value or ""
+        except Exception:
+            try:
+                return self.query_one("#persona-text", Input).value.strip()
+            except Exception:
+                return ""
+
+    def action_run(self) -> None:
+        from darkcat.identity import invoke_cli_capturing
+        import argparse as _argparse
+
+        persona = self._persona()
+        action = self.query_one("#action", Select).value or "send"
+        to_raw = self.query_one("#to", Input).value.strip()
+        subj = self.query_one("#subject", Input).value.strip()
+        body = self.query_one("#body", Input).value.strip()
+        log = self.query_one("#mail-log", RichLog)
+
+        if not persona:
+            log.write("[red]error:[/] persona is required")
+            return
+
+        if action == "send":
+            recipients = [s.strip() for s in to_raw.split(",") if s.strip()]
+            if not recipients or not subj or not body:
+                log.write("[red]error:[/] need to, subject, body")
+                return
+            ns = _argparse.Namespace(
+                cmd="mail", action="send", persona=persona,
+                to=recipients, cc=None, bcc=None, reply_to=None,
+                subject=subj, body=body, body_file=None, timeout=30.0,
+            )
+        else:
+            try:
+                limit = int(body) if body else 25
+            except ValueError:
+                limit = 25
+            ns = _argparse.Namespace(
+                cmd="mail", action="check", persona=persona,
+                folder=subj or "INBOX", limit=limit, timeout=30.0,
+                json=False,
+            )
+
+        try:
+            rc, out, err = invoke_cli_capturing(self.cfg, ns)
+        except SystemExit as e:
+            rc = int(e.code) if isinstance(e.code, int) else 2
+            out, err = "", ""
+        except Exception as e:
+            rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+
+        if out:
+            log.write(out.rstrip())
+        if err:
+            log.write(f"[red]{err.rstrip()}[/]")
+        log.write(f"[#5c8c70]-- exit {rc} --[/]")
+
+
+class PersonaAddScreen(ModalScreen[None]):
+    """Add a mail-flavoured persona with a mail-provider preset picker.
+
+    Mirrors ``personas add NAME --mail-provider SLUG`` so SMTP/IMAP
+    host:port + TLS defaults land without manual typing. Operator
+    overrides (network / site / notes) still win over the preset, same
+    as the CLI handler.
+    """
+
+    BINDINGS = [
+        Binding("escape", "close", "Close", show=True),
+        Binding("ctrl+enter", "submit", "Add", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    PersonaAddScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    PersonaAddScreen #card {
+        width: 80; max-width: 92%; height: auto; max-height: 92%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    PersonaAddScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    PersonaAddScreen #hint  { color: #5c8c70; padding-bottom: 1; }
+    PersonaAddScreen Label { color: #5c8c70; padding-top: 1; }
+    PersonaAddScreen Input, PersonaAddScreen Select {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    PersonaAddScreen RichLog {
+        height: 8; background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; margin-top: 1;
+    }
+    PersonaAddScreen #buttons { height: 3; padding-top: 1; align-horizontal: center; }
+    """
+
+    def __init__(self, cfg) -> None:
+        super().__init__()
+        self.cfg = cfg
+
+    def compose(self) -> ComposeResult:
+        from darkcat import mail_providers as _mp
+        preset_options = [("(none — fill manually)", "")]
+        for preset in _mp.all_presets():
+            label = f"{preset.slug} — {preset.description.split(';')[0]}"
+            preset_options.append((label, preset.slug))
+
+        with Vertical(id="card"):
+            yield Static("Add mail persona", id="title")
+            yield Static(
+                "Pick a mail-provider preset and SMTP/IMAP host, port, "
+                "and TLS mode are filled in for you. Any field you "
+                "override still wins over the preset.",
+                id="hint",
+            )
+            yield Label("Name (unique persona id)")
+            yield Input(id="name", placeholder="e.g. me-disroot")
+            yield Label("Mail provider")
+            yield Select(preset_options, id="preset", value="",
+                         allow_blank=False)
+            yield Label("Handle (e.g. alice@disroot.org)")
+            yield Input(id="handle")
+            yield Label("Email (optional)")
+            yield Input(id="email")
+            yield Label("Password (blank = autogenerate when --gen)")
+            yield Input(id="password", password=True)
+            yield Label("Network override (optional)")
+            yield Input(id="network")
+            yield Label("Site override (optional — e.g. host:port)")
+            yield Input(id="site")
+            yield Label("Notes override (optional)")
+            yield Input(id="notes")
+            yield Static("Auto-generate handle/password if blank: yes",
+                         id="gen-hint")
+            log = RichLog(highlight=False, markup=True, wrap=False)
+            yield log
+            with Horizontal(id="buttons"):
+                yield Button("Add", id="submit", variant="success")
+                yield Button("Close", id="close", variant="default")
+
+    def on_mount(self) -> None:
+        self.query_one("#name", Input).focus()
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "submit":
+            self.action_submit()
+        else:
+            self.dismiss(None)
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_submit(self) -> None:
+        import argparse as _argparse
+        from darkcat.identity import invoke_cli_capturing
+
+        name = self.query_one("#name", Input).value.strip()
+        if not name:
+            self.notify("name is required", severity="warning", timeout=3)
+            return
+        preset_slug = self.query_one("#preset", Select).value or None
+        ns = _argparse.Namespace(
+            cmd="personas", action="add", name=name,
+            network=self.query_one("#network", Input).value or "",
+            site=self.query_one("#site", Input).value or "",
+            handle=self.query_one("#handle", Input).value or None,
+            password=self.query_one("#password", Input).value or None,
+            email=self.query_one("#email", Input).value or None,
+            pgp_key_id=None,
+            recovery=None,
+            notes=self.query_one("#notes", Input).value or None,
+            user_agent=None,
+            proxy=None,
+            tags=[],
+            gen=True,
+            replace=False,
+            mail_provider=preset_slug,
+        )
+        try:
+            rc, out, err = invoke_cli_capturing(self.cfg, ns)
+        except SystemExit as e:
+            rc = int(e.code) if isinstance(e.code, int) else 2
+            out, err = "", ""
+        except Exception as e:
+            rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+
+        log = self.query_one(RichLog)
+        if out:
+            log.write(out.rstrip())
+        if err:
+            log.write(f"[red]{err.rstrip()}[/]")
+        log.write(f"[#5c8c70]-- exit {rc} --[/]")
+        if rc == 0:
+            self.notify(f"persona {name} added", timeout=3)
+
+
 class DarkcatApp(App):
     CSS = """
     /* ----- darknet phosphor theme ------------------------------------ */
@@ -701,6 +2092,10 @@ class DarkcatApp(App):
         Binding("question_mark", "show_score_help", "Score?"),
         Binding("f1",     "show_about",       "About"),
         Binding("f2",     "show_keymap",      "Keys"),
+        Binding("i",      "show_identity",    "Identity"),
+        Binding("c",      "show_chat",        "Chat"),
+        Binding("m",      "show_mail",        "Mail"),
+        Binding("p",      "show_persona_add", "Persona"),
         Binding("q",      "quit",            "Quit"),
     ]
 
@@ -859,6 +2254,22 @@ class DarkcatApp(App):
     def action_show_keymap(self) -> None:
         """Open the Keymap modal — F2. Closes on Esc / F2 / q / Enter."""
         self.push_screen(KeymapScreen())
+
+    def action_show_identity(self) -> None:
+        """Open the Identity vault modal — i. List/new/confirm/burn."""
+        self.push_screen(IdentityScreen(self.cfg))
+
+    def action_show_chat(self) -> None:
+        """Open the Chat console modal — c. Per-persona chat actions."""
+        self.push_screen(ChatScreen(self.cfg))
+
+    def action_show_mail(self) -> None:
+        """Open the Mail console modal — m. Per-persona SMTP/IMAP."""
+        self.push_screen(MailScreen(self.cfg))
+
+    def action_show_persona_add(self) -> None:
+        """Open the Add-mail-persona modal — p. Wraps `personas add`."""
+        self.push_screen(PersonaAddScreen(self.cfg))
 
     def action_show_score_help(self) -> None:
         """Dump the score / category formula into the log on `?`. Renders as
