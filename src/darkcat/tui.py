@@ -2216,6 +2216,7 @@ class DarkcatApp(App):
         Binding("c",      "show_chat",        "Chat"),
         Binding("m",      "show_mail",        "Mail"),
         Binding("p",      "show_persona_add", "Persona"),
+        Binding("d",      "show_doctor",      "Doctor"),
         Binding("q",      "quit",            "Quit"),
     ]
 
@@ -2390,6 +2391,25 @@ class DarkcatApp(App):
     def action_show_persona_add(self) -> None:
         """Open the Add-mail-persona modal — p. Wraps `personas add`."""
         self.push_screen(PersonaAddScreen(self.cfg))
+
+    def action_show_doctor(self) -> None:
+        """Run the same self-checks as ``darkcat doctor`` and render them in
+        a ResultScreen — d. CLI / REPL / GUI all have a doctor surface; this
+        is the TUI's. Output is plain-text aligned (no markup) because
+        ResultScreen renders verbatim — color parity with the CLI is a
+        follow-up if it ever matters."""
+        from darkcat.cli import doctor_run
+        rows = doctor_run(self.cfg)
+        glyphs = {"ok": "[OK]  ", "warn": "[WARN]", "fail": "[FAIL]"}
+        lines: list[str] = []
+        for level, label, detail, fix in rows:
+            lines.append(f"{glyphs.get(level, '[?]')}  {label}")
+            lines.append(f"           {detail}")
+            if fix and level != "ok":
+                lines.append(f"           fix: {fix}")
+            lines.append("")
+        body = "\n".join(lines) if lines else "(no checks ran)"
+        self.push_screen(ResultScreen("darkcat doctor", body))
 
     def action_show_score_help(self) -> None:
         """Dump the score / category formula into the log on `?`. Renders as

@@ -492,6 +492,24 @@ def test_vault_unlock_mixin_no_passphrase_leaves_env_clean(monkeypatch):
     _run(go())
 
 
+def test_darkcat_app_has_doctor_binding_and_action():
+    """Doctor is the TUI's parity partner for the CLI/REPL/GUI doctor
+    surface. Guard both ends of the wiring: the keybinding exists and
+    routes to a method that exists. Cheap structural test — exercising
+    the modal end-to-end would require booting the full DarkcatApp,
+    which needs a Fetcher / Storage / TransportControl just to compose."""
+    from darkcat.tui import DarkcatApp
+
+    keys = {(b.key, b.action) for b in DarkcatApp.BINDINGS}
+    assert ("d", "show_doctor") in keys, (
+        "expected 'd' bound to show_doctor; saw " + repr(sorted(keys))
+    )
+    assert callable(getattr(DarkcatApp, "action_show_doctor", None)), (
+        "DarkcatApp.action_show_doctor missing — the 'd' binding would "
+        "fire into a no-op."
+    )
+
+
 def test_mail_screen_send_threads_cc_bcc_reply_to_into_namespace(tmp_path, monkeypatch):
     """The mail-send form must wire the new CC / BCC / Reply-To fields
     into the Namespace handed to the CLI. Empty fields collapse to
