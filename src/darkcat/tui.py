@@ -922,6 +922,14 @@ class IdentityEditScreen(ModalScreen[Optional[dict]]):
         self.dismiss(None)
 
 
+# Sentinel Select value used by ChatScreen / MailScreen while the
+# vault is still locked. ``_persona()`` maps it back to empty so the
+# CLI dispatcher reports "persona is required" rather than seeing the
+# placeholder leak through. Mounted on encrypted vaults; replaced by
+# real persona names once ``_refresh_personas`` runs post-unlock.
+_PERSONA_PENDING = "__persona_pending__"
+
+
 class _VaultUnlockMixin:
     """Shared passphrase-prompt + env-var-threading machinery.
 
@@ -1505,12 +1513,17 @@ class ChatScreen(_VaultUnlockMixin, ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         from darkcat import personas as pv
-        # Best-effort persona list; encrypted vaults fall back to an empty
-        # list and a free-form Input so the screen still works.
+        # Plain vaults populate the Select directly. Encrypted vaults
+        # yield a placeholder Select; ``on_mount`` then prompts for the
+        # passphrase and calls ``set_options`` once the vault opens, so
+        # the operator sees the real persona list instead of a free-form
+        # Input. Empty / missing vaults still drop to the Input fallback.
         persona_options: list[tuple[str, str]] = []
+        encrypted = False
         try:
             path = pv.vault_path()
-            if path.exists() and path.suffix != ".gpg":
+            encrypted = path.exists() and path.suffix == ".gpg"
+            if path.exists() and not encrypted:
                 v = pv.Vault(path=path)
                 for p in v.personas:
                     persona_options.append((f"{p.name} ({p.network or '-'})", p.name))
@@ -1524,7 +1537,12 @@ class ChatScreen(_VaultUnlockMixin, ModalScreen[None]):
                 for label, btn_id, _net, _act in self._PRESETS:
                     yield Button(label, id=btn_id, variant="primary")
             yield Label("Persona")
-            if persona_options:
+            if encrypted:
+                yield Select(
+                    [("(unlock to load personas)", _PERSONA_PENDING)],
+                    id="persona", allow_blank=False, value=_PERSONA_PENDING,
+                )
+            elif persona_options:
                 yield Select(persona_options, id="persona", allow_blank=False)
             else:
                 yield Input(placeholder="persona name", id="persona-text")
@@ -1598,12 +1616,41 @@ class ChatScreen(_VaultUnlockMixin, ModalScreen[None]):
         except Exception:
             pass
 
+    def on_mount(self) -> None:
+        # Encrypted vaults need a passphrase before we can list personas;
+        # unlock now so the Select carries real names by the time the
+        # operator interacts with it, instead of waiting until Run.
+        if self._vault_is_encrypted():
+            self._unlock_then(self._refresh_personas)
+
+    def _refresh_personas(self) -> None:
+        """Re-populate the persona Select after a successful unlock. Done
+        in-place via ``set_options`` so the layout doesn't reflow."""
+        inner = self._open_inner_or_notify()
+        if inner is None:
+            return
+        options = [(f"{p.name} ({p.network or '-'})", p.name)
+                   for p in inner.personas]
+        if not options:
+            self.notify("vault has no personas yet", severity="warning",
+                        timeout=4)
+            return
+        try:
+            sel = self.query_one("#persona", Select)
+            sel.set_options(options)
+            sel.value = options[0][1]
+        except Exception:
+            pass
+
     def action_close(self) -> None:
         self.dismiss(None)
 
     def _persona(self) -> str:
         try:
-            return self.query_one("#persona", Select).value or ""
+            v = self.query_one("#persona", Select).value
+            if v == _PERSONA_PENDING:
+                return ""
+            return v or ""
         except Exception:
             try:
                 return self.query_one("#persona-text", Input).value.strip()
@@ -1707,10 +1754,15 @@ class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
 
     def compose(self) -> ComposeResult:
         from darkcat import personas as pv
+        # Same pre-populate pattern as ChatScreen: plain vault populates
+        # the Select; encrypted vault gets a placeholder and ``on_mount``
+        # fills the real list after the operator unlocks.
         persona_options: list[tuple[str, str]] = []
+        encrypted = False
         try:
             path = pv.vault_path()
-            if path.exists() and path.suffix != ".gpg":
+            encrypted = path.exists() and path.suffix == ".gpg"
+            if path.exists() and not encrypted:
                 v = pv.Vault(path=path)
                 persona_options = [(f"{p.name} ({p.site or '-'})", p.name)
                                    for p in v.personas]
@@ -1720,7 +1772,12 @@ class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
         with Vertical(id="card"):
             yield Static("Mail console", id="title")
             yield Label("Persona")
-            if persona_options:
+            if encrypted:
+                yield Select(
+                    [("(unlock to load personas)", _PERSONA_PENDING)],
+                    id="persona", allow_blank=False, value=_PERSONA_PENDING,
+                )
+            elif persona_options:
                 yield Select(persona_options, id="persona", allow_blank=False)
             else:
                 yield Input(placeholder="persona name", id="persona-text")
@@ -1747,12 +1804,41 @@ class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
         else:
             self.action_close()
 
+    def on_mount(self) -> None:
+        # Mirror ChatScreen: unlock encrypted vaults on open so the persona
+        # Select carries real names before the operator hits Run.
+        if self._vault_is_encrypted():
+            self._unlock_then(self._refresh_personas)
+
+    def _refresh_personas(self) -> None:
+        """Re-populate the persona Select after unlock. Mail personas
+        carry a ``site`` field (mail provider slug) rather than
+        ``network`` — that's the only difference from ChatScreen."""
+        inner = self._open_inner_or_notify()
+        if inner is None:
+            return
+        options = [(f"{p.name} ({p.site or '-'})", p.name)
+                   for p in inner.personas]
+        if not options:
+            self.notify("vault has no personas yet", severity="warning",
+                        timeout=4)
+            return
+        try:
+            sel = self.query_one("#persona", Select)
+            sel.set_options(options)
+            sel.value = options[0][1]
+        except Exception:
+            pass
+
     def action_close(self) -> None:
         self.dismiss(None)
 
     def _persona(self) -> str:
         try:
-            return self.query_one("#persona", Select).value or ""
+            v = self.query_one("#persona", Select).value
+            if v == _PERSONA_PENDING:
+                return ""
+            return v or ""
         except Exception:
             try:
                 return self.query_one("#persona-text", Input).value.strip()

@@ -408,6 +408,52 @@ def test_chat_screen_threads_passphrase_into_cli_env():
     _run(go())
 
 
+def test_chat_screen_populates_persona_select_on_unlock(tmp_path, monkeypatch):
+    """When the vault is encrypted, ChatScreen mounts with a placeholder
+    Select; once ``_refresh_personas`` runs (post-unlock) the real names
+    must land in the dropdown. We bypass the PassphraseScreen by setting
+    ``_passphrase`` directly so the test doesn't depend on Pilot keying
+    into the modal's Input."""
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+
+    from darkcat import personas as pv
+    from darkcat.config import Config
+
+    # Build an encrypted vault on disk so ``_vault_is_encrypted`` is true
+    # and ``_open_inner_or_notify`` succeeds with the right passphrase.
+    inner = pv.Vault(path=tmp_path / "personas.json.gpg", passphrase="pw")
+    inner.add(pv.Persona(
+        name="tg-acct", provider="telegram", category="chat",
+        status=pv.STATUS_CONFIRMED, network="telegram",
+    ))
+    inner.save()
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = ChatScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            await pilot.pause()
+
+            from textual.widgets import Select
+            sel = screen.query_one("#persona", Select)
+            # Before unlock: placeholder only.
+            assert sel.value == "__persona_pending__"
+
+            # Simulate the operator typing the right passphrase. We skip
+            # the modal and pre-seed the cache, then drive the same
+            # refresh hook on_mount would have called.
+            screen._passphrase = "pw"
+            screen._refresh_personas()
+            await pilot.pause()
+
+            assert sel.value == "tg-acct"
+            # ``_persona()`` must report the real name, not the sentinel.
+            assert screen._persona() == "tg-acct"
+
+    _run(go())
+
+
 def test_vault_unlock_mixin_no_passphrase_leaves_env_clean(monkeypatch):
     """When no passphrase has been cached, ``_run_with_passphrase`` must
     NOT inject the env var — that would leak a stale value from a prior

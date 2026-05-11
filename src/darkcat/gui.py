@@ -2879,10 +2879,11 @@ class DarkcatGUI:
         presets_row = tk.Frame(body, bg=DEEP_BG)
         presets_row.pack(fill="x", pady=(0, 8))
 
-        # Persona dropdown sourced from the vault. Encrypted vaults need a
-        # passphrase first — the same one is then cached in ``state`` and
-        # threaded into the CLI via ``DARKCAT_VAULT_PASSPHRASE`` so Run
-        # works end-to-end without re-prompting per action.
+        # Persona dropdown sourced from the vault. Encrypted vaults are
+        # unlocked here, before the form is built, so the Combobox carries
+        # real names instead of falling back to a free-form Entry. The
+        # cached passphrase is then threaded into the CLI via
+        # ``DARKCAT_VAULT_PASSPHRASE`` on Run.
         state: dict[str, object] = {"passphrase": None}
 
         def _vault_is_encrypted() -> bool:
@@ -2898,6 +2899,25 @@ class DarkcatGUI:
                 return [p.name for p in v.personas]
             except Exception:
                 return []
+
+        # Prompt up-front on encrypted vaults so the persona Combobox
+        # populates. Wrong-passphrase loops re-prompt; cancel leaves
+        # state['passphrase'] = None and degrades to the Entry fallback.
+        if _vault_is_encrypted():
+            while True:
+                pw = self._open_passphrase_dialog(dlg, "Vault is encrypted")
+                if pw is None:
+                    break
+                try:
+                    pv.Vault(path=pv.vault_path(), passphrase=pw)
+                except RuntimeError as e:
+                    messagebox.showerror(
+                        "darkcat — vault locked",
+                        f"wrong passphrase: {e}", parent=dlg,
+                    )
+                    continue
+                state["passphrase"] = pw
+                break
 
         persona_names = _load_persona_names()
 
@@ -3149,9 +3169,11 @@ class DarkcatGUI:
             wraplength=780, justify="left",
         ).pack(anchor="w", pady=(0, 6))
 
-        # Persona dropdown sourced from the vault; encrypted vaults prompt
-        # for a passphrase on Run and cache it in ``state`` for re-use, then
-        # thread it into the CLI via ``DARKCAT_VAULT_PASSPHRASE``.
+        # Persona dropdown sourced from the vault. Encrypted vaults are
+        # unlocked here, before the form is built, so the Combobox carries
+        # real names instead of falling back to a free-form Entry. Cached
+        # passphrase is threaded into the CLI via DARKCAT_VAULT_PASSPHRASE
+        # on Run.
         state: dict[str, object] = {"passphrase": None}
 
         def _vault_is_encrypted() -> bool:
@@ -3167,6 +3189,24 @@ class DarkcatGUI:
                 return [p.name for p in v.personas]
             except Exception:
                 return []
+
+        # Up-front unlock on encrypted vaults so the persona Combobox
+        # populates. Cancel falls through to the free-form Entry.
+        if _vault_is_encrypted():
+            while True:
+                pw = self._open_passphrase_dialog(dlg, "Vault is encrypted")
+                if pw is None:
+                    break
+                try:
+                    pv.Vault(path=pv.vault_path(), passphrase=pw)
+                except RuntimeError as e:
+                    messagebox.showerror(
+                        "darkcat — vault locked",
+                        f"wrong passphrase: {e}", parent=dlg,
+                    )
+                    continue
+                state["passphrase"] = pw
+                break
 
         persona_names = _load_persona_names()
 
