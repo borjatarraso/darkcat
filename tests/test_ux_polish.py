@@ -359,6 +359,47 @@ def test_repl_subaction_completer_filters_by_prefix() -> None:
     assert completions == ["bridges", "bridges-add", "bridges-clear"]
 
 
+def test_repl_completes_identity_launch_flags() -> None:
+    """``identity launch <name> --<TAB>`` must offer ``--capture`` and
+    ``--no-spawn``. Without this, the recovery-code capture flow is
+    hidden from anyone who lives in the REPL — they'd have to read
+    ``identity launch --help`` to discover it exists."""
+    shell = DarkcatShell.__new__(DarkcatShell)
+    completions = shell._complete_subaction(
+        "identity", "--", "identity launch acct-1 --",
+    )
+    assert set(completions) == {"--capture", "--no-spawn"}
+
+
+def test_repl_completes_identity_launch_flags_by_prefix() -> None:
+    """Prefix narrows the menu — ``--c`` resolves to ``--capture``
+    only."""
+    shell = DarkcatShell.__new__(DarkcatShell)
+    completions = shell._complete_subaction(
+        "identity", "--c", "identity launch acct-1 --c",
+    )
+    assert completions == ["--capture"]
+
+
+def test_repl_flag_completer_drops_already_used() -> None:
+    """If ``--capture`` is already on the line, only ``--no-spawn`` is
+    offered. Keeps Tab from suggesting flags that would just duplicate."""
+    shell = DarkcatShell.__new__(DarkcatShell)
+    completions = shell._complete_subaction(
+        "identity", "--", "identity launch acct-1 --capture --",
+    )
+    assert completions == ["--no-spawn"]
+
+
+def test_repl_flag_completer_only_inside_subaction() -> None:
+    """``identity --<TAB>`` (no subaction yet) must not leak the
+    subaction-specific flag table — the user's still picking which verb
+    to run."""
+    shell = DarkcatShell.__new__(DarkcatShell)
+    completions = shell._complete_subaction("identity", "--", "identity --")
+    assert completions == []
+
+
 def test_repl_each_subactioned_command_has_complete_method() -> None:
     """For users to actually get tab-completion, ``cmd.Cmd`` looks up
     ``complete_<name>`` on the instance — not just our generic helper. Make

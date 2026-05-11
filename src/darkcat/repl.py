@@ -140,6 +140,17 @@ _SUBACTIONS: dict[str, tuple[str, ...]] = {
 }
 
 
+# Per-(command, subaction) flag completion. The subaction table above gets
+# us as far as ``identity <TAB>`` → list of verbs; this map is what makes
+# ``identity launch <name> --<TAB>`` offer ``--capture`` / ``--no-spawn``.
+# Seed only the entries we know matter — flag completion for sparsely-used
+# subactions is more noise than value, and the CLI's own ``--help`` is
+# always one keystroke away.
+_SUBACTION_FLAGS: dict[tuple[str, str], tuple[str, ...]] = {
+    ("identity", "launch"): ("--capture", "--no-spawn"),
+}
+
+
 # Persistent history file — readline writes / reads here so up-arrow survives
 # across REPL sessions. Lives next to the DB (~/.darkcat/history) so a single
 # `rm -rf ~/.darkcat` resets every persistent piece of state at once.
@@ -326,6 +337,15 @@ class DarkcatShell(cmd.Cmd):
         # decide whether the cursor is on the subaction slot.
         remainder = line[len(cmd_name):].lstrip()
         already = remainder.split()
+
+        # Flag completion: any --... word past the subaction picks from
+        # the subaction-specific flag table. Done before the positional
+        # check so ``identity launch foo --<TAB>`` resolves cleanly.
+        if text.startswith("--") and already and already[0] in _SUBACTIONS.get(cmd_name, ()):
+            flags = _SUBACTION_FLAGS.get((cmd_name, already[0]), ())
+            used = {tok for tok in already if tok.startswith("--") and tok != text}
+            return [f for f in flags if f.startswith(text) and f not in used]
+
         if len(already) > 1 or (len(already) == 1 and not text):
             return []  # past the subaction position
         return [a for a in _SUBACTIONS.get(cmd_name, ()) if a.startswith(text)]
