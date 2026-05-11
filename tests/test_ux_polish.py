@@ -400,6 +400,20 @@ def test_repl_flag_completer_only_inside_subaction() -> None:
     assert completions == []
 
 
+def test_repl_personas_path_dispatches_to_cli(tmp_path, monkeypatch, capsys):
+    """End-to-end smoke test: ``personas path`` should round-trip through
+    the REPL's ``do_personas`` and print the vault file path. Guards the
+    integration between _SUBACTIONS, do_personas, and cmd_personas — if
+    any of those drift, this fails loudly."""
+    monkeypatch.setenv("DARKCAT_HOME", str(tmp_path))
+
+    shell = DarkcatShell.__new__(DarkcatShell)
+    shell.cfg = Config(db_path=tmp_path / "crawl.db")
+    shell.do_personas("path")
+    out = capsys.readouterr().out
+    assert "personas.json" in out
+
+
 def test_repl_each_subactioned_command_has_complete_method() -> None:
     """For users to actually get tab-completion, ``cmd.Cmd`` looks up
     ``complete_<name>`` on the instance — not just our generic helper. Make

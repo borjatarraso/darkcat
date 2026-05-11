@@ -103,6 +103,8 @@ _REPL_COMMAND_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
         ("zeronet-walk",  "Walk a ZeroNet site's content.json graph."),
     ]),
     ("Identity & comms", [
+        ("identity", "Per-project identity vault: new / list / show / confirm / launch …"),
+        ("personas", "Persona vault: cookies, credentials, mail providers."),
         ("telegram", "Scrape t.me/s/<channel> messages."),
         ("chat",     "Two-way chat: login / list / read / send / join / leave / connect / addcontact."),
         ("mail",     "Send + check email through a persona (SMTP / IMAP)."),
@@ -121,8 +123,8 @@ _PROTOCOL_ARG_NAMES: tuple[str, ...] = (*_PROTOCOL_NAMES, "all")
 
 # Subaction sets — each command's first positional. Only commands the REPL
 # actually exposes as ``do_<name>`` belong here; CLI-only commands like
-# ``cookies`` / ``personas`` aren't reachable from inside the shell, so a
-# completer for them would be misleading. Tests guard the linkage.
+# ``cookies`` aren't reachable from inside the shell, so a completer for
+# them would be misleading. Tests guard the linkage.
 _SUBACTIONS: dict[str, tuple[str, ...]] = {
     "watch":     ("add", "list", "remove", "test"),
     "tor":       ("newnym", "info", "circuits", "descriptor",
@@ -137,6 +139,8 @@ _SUBACTIONS: dict[str, tuple[str, ...]] = {
     "chat":      ("backends", "login", "list", "read", "send", "ingest",
                   "join", "leave", "connect", "addcontact"),
     "mail":      ("send", "check"),
+    "personas":  ("add", "mail-providers", "list", "show", "remove",
+                  "gen", "use", "path", "encrypt", "decrypt"),
 }
 
 
@@ -373,6 +377,9 @@ class DarkcatShell(cmd.Cmd):
 
     def complete_mail(self, text, line, begidx, endidx):
         return self._complete_subaction("mail", text, line)
+
+    def complete_personas(self, text, line, begidx, endidx):
+        return self._complete_subaction("personas", text, line)
 
     @staticmethod
     def _split(line: str) -> Optional[list[str]]:
@@ -1182,6 +1189,35 @@ class DarkcatShell(cmd.Cmd):
             _cli.cmd_mail(self.cfg, ns)
         except Exception as e:
             _err_console.print(f"[fail]mail: {e}[/]")
+
+    def do_personas(self, arg: str) -> None:
+        """personas ACTION [args]   Persona vault: cookies, credentials, mail.
+
+        ACTION = add | list | show | remove | gen | use | path |
+                 encrypt | decrypt | mail-providers
+        Shortcuts:
+          personas add bob --network tor --site example.onion --gen
+          personas add me-proton --mail-provider protonmail
+          personas list --network tor
+          personas show bob --reveal
+          personas mail-providers
+          personas encrypt          # AES-256 the vault behind a passphrase
+        Falls through to the same argparse parser as the CLI, so every
+        flag of `darkcat personas ...` works here too."""
+        toks = self._split(arg)
+        if toks is None or not toks:
+            print(self.do_personas.__doc__)
+            return
+        from darkcat import cli as _cli
+        parser = _cli._build_parser()
+        try:
+            ns = parser.parse_args(["personas", *toks])
+        except SystemExit:
+            return
+        try:
+            _cli.cmd_personas(self.cfg, ns)
+        except Exception as e:
+            _err_console.print(f"[fail]personas: {e}[/]")
 
     def do_blocklist(self, arg: str) -> None:
         """blocklist ACTION [args]   test --file FILE URL... | log [-n N]"""
