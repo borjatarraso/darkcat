@@ -5,6 +5,32 @@ All notable changes to **darkcat** are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and the project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] — 2026-05-11
+
+Patch release closing a parity gap that landed too late for 0.4.0: the
+mail and chat consoles in both the TUI and GUI were dispatching the CLI
+without exposing the cached vault passphrase, so operators with an
+encrypted vault could open the consoles but every action failed (or
+worse, blocked the event loop on `getpass.getpass()`).
+
+### Fixed
+
+- **TUI mail / chat consoles** (`MailScreen`, `ChatScreen`) now share
+  the `_VaultUnlockMixin` machinery with `IdentityScreen`. The screen
+  prompts for the passphrase on first dispatch, caches it for the
+  screen's lifetime, and threads it into the CLI via
+  `DARKCAT_VAULT_PASSPHRASE` — the env var is restored on exit so it
+  doesn't leak to unrelated callers.
+- **GUI mail / chat dialogs** (`_show_chat`, `_show_mail`) mirror the
+  same pattern using `_open_passphrase_dialog`, so encrypted vaults are
+  finally first-class in every console of every frontend.
+
+### Tests
+
+Three new `tests/test_tui_screens.py` cases assert the env-var contract
+on both screens plus the no-passphrase off path (must not override an
+outer `DARKCAT_VAULT_PASSPHRASE` baseline).
+
 ## [0.4.0] — 2026-05-11
 
 The 0.4 cycle finishes the four-frontend parity story for the Identity

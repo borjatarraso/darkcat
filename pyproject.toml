@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "darkcat"
-version = "0.4.0"
+version = "0.4.1"
 description = "Multi-protocol darknet & overlay-network crawler (Tor, I2P, IPFS, Freenet, Lokinet, GNUnet, ZeroNet, Gemini, Gopher, Spartan, NEX, Hyper, Yggdrasil, cjdns, Namecoin, EmerCoin, ENS, Handshake, Unstoppable, OpenNIC and more) with topic filtering, CLI and Textual TUI"
 readme = "README.md"
 requires-python = ">=3.9"
