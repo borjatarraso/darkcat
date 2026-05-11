@@ -120,5 +120,10 @@ prior value with try/finally so the env var doesn't leak).
 4. **Encrypted vaults are first-class in every frontend.** As of 0.4,
    TUI and GUI both prompt for the passphrase through a modal and
    thread it through to the CLI handler via
-   `DARKCAT_VAULT_PASSPHRASE`. The CLI is still the only surface that
-   accepts the passphrase non-interactively (env var or stdin).
+   `DARKCAT_VAULT_PASSPHRASE`. As of 0.4.1, the same contract holds
+   for the **mail** and **chat** consoles (`MailScreen` / `ChatScreen`
+   in the TUI; the `Mail` / `Chat` Tk dialogs in the GUI): they unlock
+   the vault on dialog open, populate the persona dropdown with real
+   names, and re-use the cached passphrase for every action. The CLI
+   is still the only surface that accepts the passphrase non-
+   interactively (env var or stdin).
