@@ -2879,16 +2879,27 @@ class DarkcatGUI:
         presets_row = tk.Frame(body, bg=DEEP_BG)
         presets_row.pack(fill="x", pady=(0, 8))
 
-        # Persona dropdown sourced from the vault; falls back to a free-
-        # form entry when the vault is encrypted or unreadable.
-        persona_names: list[str] = []
-        try:
+        # Persona dropdown sourced from the vault. Encrypted vaults need a
+        # passphrase first — the same one is then cached in ``state`` and
+        # threaded into the CLI via ``DARKCAT_VAULT_PASSPHRASE`` so Run
+        # works end-to-end without re-prompting per action.
+        state: dict[str, object] = {"passphrase": None}
+
+        def _vault_is_encrypted() -> bool:
             path = pv.vault_path()
-            if path.exists() and path.suffix != ".gpg":
-                v = pv.Vault(path=path)
-                persona_names = [p.name for p in v.personas]
-        except Exception:
-            pass
+            return path.exists() and path.suffix == ".gpg"
+
+        def _load_persona_names() -> list[str]:
+            try:
+                path = pv.vault_path()
+                if not path.exists():
+                    return []
+                v = pv.Vault(path=path, passphrase=state["passphrase"])
+                return [p.name for p in v.personas]
+            except Exception:
+                return []
+
+        persona_names = _load_persona_names()
 
         form = tk.Frame(body, bg=DEEP_BG)
         form.pack(fill="x", pady=(4, 0))
@@ -3034,18 +3045,55 @@ class DarkcatGUI:
                 ns_kwargs["name"] = body_str or None
 
             ns = _argparse.Namespace(**ns_kwargs)
+
+            def _dispatch() -> None:
+                import os as _os
+                saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                if state["passphrase"] is not None:
+                    _os.environ["DARKCAT_VAULT_PASSPHRASE"] = state["passphrase"]
+                try:
+                    rc, out, err = invoke_cli_capturing(self.cfg, ns)
+                except SystemExit as e:
+                    rc = int(e.code) if isinstance(e.code, int) else 2
+                    out, err = "", ""
+                except Exception as e:
+                    rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+                finally:
+                    if state["passphrase"] is not None:
+                        if saved is None:
+                            _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
+                        else:
+                            _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+                if out:
+                    _log(out)
+                if err:
+                    _log(err)
+                _log(f"-- exit {rc} --")
+
+            _unlock_then(_dispatch)
+
+        def _unlock_then(callback) -> None:
+            """Prompt for the vault passphrase if needed, verify it opens
+            the file, then run ``callback``. Wrong-passphrase loops re-
+            prompt until the operator cancels."""
+            if not _vault_is_encrypted() or state["passphrase"] is not None:
+                callback()
+                return
+            pw = self._open_passphrase_dialog(dlg, "Vault is encrypted")
+            if pw is None:
+                _log("vault locked — close and reopen to retry")
+                return
             try:
-                rc, out, err = invoke_cli_capturing(self.cfg, ns)
-            except SystemExit as e:
-                rc = int(e.code) if isinstance(e.code, int) else 2
-                out, err = "", ""
-            except Exception as e:
-                rc, out, err = 2, "", f"{type(e).__name__}: {e}"
-            if out:
-                _log(out)
-            if err:
-                _log(err)
-            _log(f"-- exit {rc} --")
+                pv.Vault(path=pv.vault_path(), passphrase=pw)
+            except RuntimeError as e:
+                messagebox.showerror(
+                    "darkcat — vault locked",
+                    f"wrong passphrase: {e}", parent=dlg,
+                )
+                _unlock_then(callback)
+                return
+            state["passphrase"] = pw
+            callback()
 
         btns = tk.Frame(body, bg=DEEP_BG)
         btns.pack(fill="x")
@@ -3101,14 +3149,26 @@ class DarkcatGUI:
             wraplength=780, justify="left",
         ).pack(anchor="w", pady=(0, 6))
 
-        persona_names: list[str] = []
-        try:
+        # Persona dropdown sourced from the vault; encrypted vaults prompt
+        # for a passphrase on Run and cache it in ``state`` for re-use, then
+        # thread it into the CLI via ``DARKCAT_VAULT_PASSPHRASE``.
+        state: dict[str, object] = {"passphrase": None}
+
+        def _vault_is_encrypted() -> bool:
             path = pv.vault_path()
-            if path.exists() and path.suffix != ".gpg":
-                v = pv.Vault(path=path)
-                persona_names = [p.name for p in v.personas]
-        except Exception:
-            pass
+            return path.exists() and path.suffix == ".gpg"
+
+        def _load_persona_names() -> list[str]:
+            try:
+                path = pv.vault_path()
+                if not path.exists():
+                    return []
+                v = pv.Vault(path=path, passphrase=state["passphrase"])
+                return [p.name for p in v.personas]
+            except Exception:
+                return []
+
+        persona_names = _load_persona_names()
 
         form = tk.Frame(body, bg=DEEP_BG)
         form.pack(fill="x", pady=(4, 0))
@@ -3219,18 +3279,54 @@ class DarkcatGUI:
                     json=False,
                 )
 
+            def _dispatch() -> None:
+                import os as _os
+                saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                if state["passphrase"] is not None:
+                    _os.environ["DARKCAT_VAULT_PASSPHRASE"] = state["passphrase"]
+                try:
+                    rc, out, err = invoke_cli_capturing(self.cfg, ns)
+                except SystemExit as e:
+                    rc = int(e.code) if isinstance(e.code, int) else 2
+                    out, err = "", ""
+                except Exception as e:
+                    rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+                finally:
+                    if state["passphrase"] is not None:
+                        if saved is None:
+                            _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
+                        else:
+                            _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+                if out:
+                    _log(out)
+                if err:
+                    _log(err)
+                _log(f"-- exit {rc} --")
+
+            _unlock_then(_dispatch)
+
+        def _unlock_then(callback) -> None:
+            """Prompt for the vault passphrase if needed, verify it opens
+            the file, then run ``callback``. Wrong-passphrase loops re-
+            prompt until the operator cancels."""
+            if not _vault_is_encrypted() or state["passphrase"] is not None:
+                callback()
+                return
+            pw = self._open_passphrase_dialog(dlg, "Vault is encrypted")
+            if pw is None:
+                _log("vault locked — close and reopen to retry")
+                return
             try:
-                rc, out, err = invoke_cli_capturing(self.cfg, ns)
-            except SystemExit as e:
-                rc = int(e.code) if isinstance(e.code, int) else 2
-                out, err = "", ""
-            except Exception as e:
-                rc, out, err = 2, "", f"{type(e).__name__}: {e}"
-            if out:
-                _log(out)
-            if err:
-                _log(err)
-            _log(f"-- exit {rc} --")
+                pv.Vault(path=pv.vault_path(), passphrase=pw)
+            except RuntimeError as e:
+                messagebox.showerror(
+                    "darkcat — vault locked",
+                    f"wrong passphrase: {e}", parent=dlg,
+                )
+                _unlock_then(callback)
+                return
+            state["passphrase"] = pw
+            callback()
 
         btns = tk.Frame(body, bg=DEEP_BG)
         btns.pack(fill="x")

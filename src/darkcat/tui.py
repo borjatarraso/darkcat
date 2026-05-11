@@ -922,13 +922,103 @@ class IdentityEditScreen(ModalScreen[Optional[dict]]):
         self.dismiss(None)
 
 
-class IdentityScreen(ModalScreen[None]):
+class _VaultUnlockMixin:
+    """Shared passphrase-prompt + env-var-threading machinery.
+
+    Originally a private helper on ``IdentityScreen``. Mail and chat
+    consoles need the same trick (prompt for the passphrase once,
+    cache it for the modal's lifetime, expose it to the CLI handler
+    via ``DARKCAT_VAULT_PASSPHRASE``) so encrypted vaults work in
+    every console — without that, ``cmd_mail`` / ``cmd_chat`` fall
+    through to ``getpass.getpass()`` which blocks under Textual.
+
+    Contract for subclasses:
+
+    * set ``self._passphrase: Optional[str] = None`` in ``__init__``
+    * inherit (also) from a Textual ``Screen`` so ``self.app`` and
+      ``self.notify`` are wired up
+    * call ``self._unlock_then(...)`` before any work that opens the
+      vault; call ``self._run_with_passphrase(ns)`` to dispatch the
+      CLI with the env var in scope
+    """
+
+    _passphrase: Optional[str]
+
+    def _vault_is_encrypted(self) -> bool:
+        from darkcat import personas as pv
+        path = pv.vault_path()
+        return path.exists() and path.suffix == ".gpg"
+
+    def _open_inner_or_notify(self):
+        """Best-effort vault open using the cached passphrase. Returns
+        the inner Vault on success, or None after pushing a notify."""
+        from darkcat import personas as pv
+        try:
+            return pv.Vault(path=pv.vault_path(),
+                            passphrase=self._passphrase)
+        except RuntimeError as e:
+            self.notify(f"could not open vault: {e}",
+                        severity="error", timeout=6)
+            return None
+
+    def _unlock_then(self, callback) -> None:
+        """If the vault is encrypted and we don't yet have a passphrase,
+        push the PassphraseScreen and invoke ``callback`` once the user
+        provides one that decrypts. Otherwise call ``callback`` directly.
+        Wrong-passphrase loops re-prompt until cancel."""
+        if not self._vault_is_encrypted() or self._passphrase is not None:
+            callback()
+            return
+
+        def _on_pw(pw: Optional[str]) -> None:
+            if pw is None:
+                self.notify("vault locked — close and reopen to retry",
+                            severity="warning", timeout=4)
+                return
+            from darkcat import personas as pv
+            try:
+                pv.Vault(path=pv.vault_path(), passphrase=pw)
+            except RuntimeError as e:
+                self.notify(f"wrong passphrase: {e}",
+                            severity="error", timeout=4)
+                self._unlock_then(callback)
+                return
+            self._passphrase = pw
+            callback()
+
+        self.app.push_screen(PassphraseScreen("Vault is encrypted"), _on_pw)
+
+    def _run_with_passphrase(self, ns) -> tuple[int, str, str]:
+        """Invoke ``invoke_cli_capturing`` with the cached passphrase in
+        scope via ``DARKCAT_VAULT_PASSPHRASE``. Restores the env var on
+        exit so it doesn't leak to unrelated callers."""
+        import os as _os
+        from darkcat.identity import invoke_cli_capturing
+        saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+        if self._passphrase is not None:
+            _os.environ["DARKCAT_VAULT_PASSPHRASE"] = self._passphrase
+        try:
+            return invoke_cli_capturing(self.cfg, ns)
+        except SystemExit as e:
+            return (int(e.code) if isinstance(e.code, int) else 2, "", "")
+        except Exception as e:
+            return (2, "", f"{type(e).__name__}: {e}")
+        finally:
+            if self._passphrase is not None:
+                if saved is None:
+                    _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
+                else:
+                    _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+
+
+class IdentityScreen(_VaultUnlockMixin, ModalScreen[None]):
     """Identity vault browser — list / new / confirm / burn.
 
-    Reads the persona vault (plain mode only — encrypted vaults stay
-    CLI-only for now since prompting for a passphrase inside a Textual
-    modal needs more plumbing). Highlights the selected row; n/c/b act
-    on it.
+    Reads the persona vault. Encrypted vaults trigger a PassphraseScreen
+    on first access; the verified passphrase is cached on the screen
+    instance and threaded into each CLI dispatch via the mixin so the
+    operator types it once per session. Highlights the selected row;
+    n/c/b act on it.
     """
 
     BINDINGS = [
@@ -989,52 +1079,9 @@ class IdentityScreen(ModalScreen[None]):
         self._unlock_then(self._refresh)
 
     # ---- vault helpers ---------------------------------------------------
-
-    def _vault_is_encrypted(self) -> bool:
-        from darkcat import personas as pv
-        path = pv.vault_path()
-        return path.exists() and path.suffix == ".gpg"
-
-    def _open_inner_or_notify(self):
-        """Best-effort vault open using the cached passphrase. Returns
-        the inner Vault on success, or None after pushing a notify."""
-        from darkcat import personas as pv
-        try:
-            return pv.Vault(path=pv.vault_path(),
-                            passphrase=self._passphrase)
-        except RuntimeError as e:
-            self.notify(f"could not open vault: {e}",
-                        severity="error", timeout=6)
-            return None
-
-    def _unlock_then(self, callback) -> None:
-        """If the vault is encrypted and we don't yet have a passphrase,
-        push the PassphraseScreen and invoke ``callback`` once the user
-        provides one that decrypts. Otherwise call ``callback`` directly.
-        Wrong-passphrase loops re-prompt until cancel."""
-        if not self._vault_is_encrypted() or self._passphrase is not None:
-            callback()
-            return
-
-        def _on_pw(pw: Optional[str]) -> None:
-            if pw is None:
-                self.notify("vault locked — close and reopen to retry",
-                            severity="warning", timeout=4)
-                return
-            # Verify before caching, so a typo doesn't poison the session.
-            from darkcat import personas as pv
-            try:
-                pv.Vault(path=pv.vault_path(), passphrase=pw)
-            except RuntimeError as e:
-                self.notify(f"wrong passphrase: {e}",
-                            severity="error", timeout=4)
-                # Re-prompt by recursing through the screen stack.
-                self._unlock_then(callback)
-                return
-            self._passphrase = pw
-            callback()
-
-        self.app.push_screen(PassphraseScreen("Vault is encrypted"), _on_pw)
+    # ``_vault_is_encrypted``, ``_open_inner_or_notify``, and
+    # ``_unlock_then`` live on ``_VaultUnlockMixin`` so MailScreen /
+    # ChatScreen can reuse the same passphrase-prompt + cache machinery.
 
     def _refresh(self) -> None:
         from darkcat.identity import IdentityVault
@@ -1079,32 +1126,7 @@ class IdentityScreen(ModalScreen[None]):
         self.app.push_screen(IdentityNewScreen(), _on_done)
 
     def _run(self, ns) -> tuple[int, str, str]:
-        """Invoke ``cmd_identity`` with stdout / stderr captured.
-
-        Returns ``(rc, stdout, stderr)``. Used so failures (cap exceeded,
-        duplicate name, missing provider) surface as a Textual notify
-        rather than vanishing under the alt-screen. The cached
-        passphrase (if any) is exposed to the CLI handler via the same
-        ``DARKCAT_VAULT_PASSPHRASE`` env var the CLI itself honors, so
-        encrypted vaults work end-to-end without re-prompting.
-        """
-        import os as _os
-        from darkcat.identity import invoke_cli_capturing
-        saved = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
-        if self._passphrase is not None:
-            _os.environ["DARKCAT_VAULT_PASSPHRASE"] = self._passphrase
-        try:
-            return invoke_cli_capturing(self.cfg, ns)
-        except SystemExit as e:
-            return (int(e.code) if isinstance(e.code, int) else 2, "", "")
-        except Exception as e:
-            return (2, "", f"{type(e).__name__}: {e}")
-        finally:
-            if self._passphrase is not None:
-                if saved is None:
-                    _os.environ.pop("DARKCAT_VAULT_PASSPHRASE", None)
-                else:
-                    _os.environ["DARKCAT_VAULT_PASSPHRASE"] = saved
+        return self._run_with_passphrase(ns)
 
     @staticmethod
     def _last_error_line(stderr: str) -> str:
@@ -1416,7 +1438,7 @@ class ConfirmRevealScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
-class ChatScreen(ModalScreen[None]):
+class ChatScreen(_VaultUnlockMixin, ModalScreen[None]):
     """Chat console — pick persona, action, fields → invoke ``cmd_chat``.
 
     Covers every action the CLI exposes: backends, login, list, read,
@@ -1479,6 +1501,7 @@ class ChatScreen(ModalScreen[None]):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.cfg = cfg
+        self._passphrase: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         from darkcat import personas as pv
@@ -1588,7 +1611,6 @@ class ChatScreen(ModalScreen[None]):
                 return ""
 
     def action_run(self) -> None:
-        from darkcat.identity import invoke_cli_capturing
         import argparse as _argparse
 
         persona = self._persona()
@@ -1636,22 +1658,23 @@ class ChatScreen(ModalScreen[None]):
             ns_kwargs["name"] = body or None
 
         ns = _argparse.Namespace(**ns_kwargs)
-        try:
-            rc, out, err = invoke_cli_capturing(self.cfg, ns)
-        except SystemExit as e:
-            rc = int(e.code) if isinstance(e.code, int) else 2
-            out, err = "", ""
-        except Exception as e:
-            rc, out, err = 2, "", f"{type(e).__name__}: {e}"
 
-        if out:
-            log.write(out.rstrip())
-        if err:
-            log.write(f"[red]{err.rstrip()}[/]")
-        log.write(f"[#5c8c70]-- exit {rc} --[/]")
+        def _go() -> None:
+            rc, out, err = self._run_with_passphrase(ns)
+            if out:
+                log.write(out.rstrip())
+            if err:
+                log.write(f"[red]{err.rstrip()}[/]")
+            log.write(f"[#5c8c70]-- exit {rc} --[/]")
+
+        # If the vault is encrypted we need the passphrase before the
+        # CLI hits ``_load_persona_or_die``; that helper falls back to
+        # ``getpass.getpass()`` which would block under Textual. Unlock
+        # first, then dispatch.
+        self._unlock_then(_go)
 
 
-class MailScreen(ModalScreen[None]):
+class MailScreen(_VaultUnlockMixin, ModalScreen[None]):
     """Mail console — send and check email via persona SMTP/IMAP."""
 
     BINDINGS = [
@@ -1680,6 +1703,7 @@ class MailScreen(ModalScreen[None]):
     def __init__(self, cfg: Config) -> None:
         super().__init__()
         self.cfg = cfg
+        self._passphrase: Optional[str] = None
 
     def compose(self) -> ComposeResult:
         from darkcat import personas as pv
@@ -1736,7 +1760,6 @@ class MailScreen(ModalScreen[None]):
                 return ""
 
     def action_run(self) -> None:
-        from darkcat.identity import invoke_cli_capturing
         import argparse as _argparse
 
         persona = self._persona()
@@ -1771,19 +1794,19 @@ class MailScreen(ModalScreen[None]):
                 json=False,
             )
 
-        try:
-            rc, out, err = invoke_cli_capturing(self.cfg, ns)
-        except SystemExit as e:
-            rc = int(e.code) if isinstance(e.code, int) else 2
-            out, err = "", ""
-        except Exception as e:
-            rc, out, err = 2, "", f"{type(e).__name__}: {e}"
+        def _go() -> None:
+            rc, out, err = self._run_with_passphrase(ns)
+            if out:
+                log.write(out.rstrip())
+            if err:
+                log.write(f"[red]{err.rstrip()}[/]")
+            log.write(f"[#5c8c70]-- exit {rc} --[/]")
 
-        if out:
-            log.write(out.rstrip())
-        if err:
-            log.write(f"[red]{err.rstrip()}[/]")
-        log.write(f"[#5c8c70]-- exit {rc} --[/]")
+        # Encrypted vault → prompt once via PassphraseScreen and cache,
+        # then dispatch. ``cmd_mail`` reads the persona's SMTP/IMAP
+        # creds from the vault, so without this it would fall through
+        # to ``getpass.getpass()`` and hang under Textual.
+        self._unlock_then(_go)
 
 
 class PersonaAddScreen(ModalScreen[None]):

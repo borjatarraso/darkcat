@@ -32,10 +32,12 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from darkcat.tui import (
+    ChatScreen,
     ConfirmRevealScreen,
     IdentityEditScreen,
     IdentityScreen,
     LinkScreen,
+    MailScreen,
     PassphraseScreen,
     PersonaAddScreen,
     ResultScreen,
@@ -321,5 +323,124 @@ def test_persona_add_screen_mounts_and_lists_presets():
             assert len(slugs_in_form) == len(_mp.all_presets()) + 1
             await pilot.press("escape")
             await pilot.pause()
+
+    _run(go())
+
+
+def test_mail_screen_threads_passphrase_into_cli_env():
+    """The MailScreen must expose its cached passphrase to the CLI via
+    ``DARKCAT_VAULT_PASSPHRASE`` during dispatch, then restore the env
+    on exit so it doesn't leak to unrelated callers. This is the gap #1
+    fix — without it, ``cmd_mail`` falls through to ``getpass.getpass()``
+    on encrypted vaults and blocks under Textual."""
+    import os as _os
+    from darkcat.config import Config
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MailScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            await pilot.pause()
+
+            screen._passphrase = "s3cret"
+
+            captured: dict = {}
+
+            def _fake_invoke(cfg, ns):
+                captured["env"] = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                return (0, "ok", "")
+
+            import darkcat.identity as _id
+            original = _id.invoke_cli_capturing
+            _id.invoke_cli_capturing = _fake_invoke
+            try:
+                pre = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                rc, out, err = screen._run_with_passphrase(object())
+                post = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+            finally:
+                _id.invoke_cli_capturing = original
+
+            assert captured["env"] == "s3cret"
+            assert pre == post
+            assert (rc, out, err) == (0, "ok", "")
+
+    _run(go())
+
+
+def test_chat_screen_threads_passphrase_into_cli_env():
+    """Same contract as the MailScreen test but for ChatScreen, which
+    shares the ``_VaultUnlockMixin`` machinery. Asserting both screens
+    guards against a regression where one of them stops inheriting the
+    mixin or reimplements ``_run`` without the env-var wrapper."""
+    import os as _os
+    from darkcat.config import Config
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = ChatScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            await pilot.pause()
+
+            screen._passphrase = "t0pseekrit"
+
+            captured: dict = {}
+
+            def _fake_invoke(cfg, ns):
+                captured["env"] = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                return (0, "ok", "")
+
+            import darkcat.identity as _id
+            original = _id.invoke_cli_capturing
+            _id.invoke_cli_capturing = _fake_invoke
+            try:
+                pre = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                rc, out, err = screen._run_with_passphrase(object())
+                post = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+            finally:
+                _id.invoke_cli_capturing = original
+
+            assert captured["env"] == "t0pseekrit"
+            assert pre == post
+            assert (rc, out, err) == (0, "ok", "")
+
+    _run(go())
+
+
+def test_vault_unlock_mixin_no_passphrase_leaves_env_clean(monkeypatch):
+    """When no passphrase has been cached, ``_run_with_passphrase`` must
+    NOT inject the env var — that would leak a stale value from a prior
+    session via inheritance. Belt-and-braces guard for the off path."""
+    import os as _os
+    from darkcat.config import Config
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            screen = MailScreen(Config())
+            await app.push_screen(screen, lambda _: None)
+            await pilot.pause()
+
+            # Operator never typed a passphrase.
+            screen._passphrase = None
+
+            captured: dict = {}
+
+            def _fake_invoke(cfg, ns):
+                captured["env"] = _os.environ.get("DARKCAT_VAULT_PASSPHRASE")
+                return (0, "", "")
+
+            import darkcat.identity as _id
+            original = _id.invoke_cli_capturing
+            _id.invoke_cli_capturing = _fake_invoke
+            # Set a baseline so we can tell whether the mixin overrode it.
+            monkeypatch.setenv("DARKCAT_VAULT_PASSPHRASE", "outer-baseline")
+            try:
+                screen._run_with_passphrase(object())
+            finally:
+                _id.invoke_cli_capturing = original
+
+            assert captured["env"] == "outer-baseline"
 
     _run(go())
