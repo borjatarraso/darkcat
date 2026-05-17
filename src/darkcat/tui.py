@@ -295,29 +295,43 @@ class SudoPasswordScreen(ModalScreen[Optional[str]]):
 
 
 _KEYMAP_GROUPS: list[tuple[str, list[tuple[str, str]]]] = [
+    ("Main menus (Function keys)", [
+        ("F1",  "About darkcat (logo, version, license, source)"),
+        ("F2",  "This keymap"),
+        ("F3",  "Chat hub — aggregated multi-protocol view"),
+        ("F4",  "Mail console (SMTP / IMAP per persona)"),
+        ("F5",  "Identity vault (new / confirm / launch / burn)"),
+        ("F6",  "Add mail persona (preset picker)"),
+        ("F7",  "Doctor — self-checks for transports, deps, vault"),
+        ("F8",  "Database statistics"),
+        ("F9",  "Near-duplicate mirrors of the selected row"),
+        ("F10", "Text-snapshot history of the selected row"),
+        ("F11", "Examples cheatsheet — common workflows"),
+        ("F12", "Quit (asks for confirmation if a crawl is active)"),
+    ]),
     ("Run a crawl", [
         ("Crawl button / Enter in form", "Start a crawl with the current form values"),
         ("Stop button / Ctrl+C",         "Abort the active crawl"),
-        ("F5",                           "Refresh the results table"),
+        ("R",                            "Refresh the results table"),
         ("Ctrl+R",                       "Re-probe transports (rescan status pills)"),
     ]),
     ("Inspect a result", [
         ("Click row / arrow keys",       "Move the row cursor"),
         ("Ctrl+Y",                       "Copy the highlighted URL to the clipboard"),
-        ("F4",                           "Show near-duplicate mirrors of the row"),
-        ("F6",                           "Show text-snapshot history for the row"),
-        ("F3",                           "Show DB statistics"),
         ("Ctrl+E",                       "Export current results to JSONL"),
+        ("?",                            "Score / category formula explanation"),
     ]),
     ("Search & fetch", [
         ("Type in 'search' + Enter",     "Run an FTS5 search across crawled pages"),
         ("Type in 'fetch URL' + Enter",  "Fetch one URL through the right transport"),
     ]),
-    ("Help & info", [
-        ("F1",                           "About darkcat (logo, version, license, source)"),
-        ("F2",                           "This keymap"),
-        ("?",                            "Score / category formula explanation"),
-        ("Q",                            "Quit (asks for confirmation if a crawl is active)"),
+    ("Letter aliases (kept for muscle memory)", [
+        ("i", "Identity vault (same as F5)"),
+        ("c", "Chat console — per-persona send/check (the hub is F3)"),
+        ("m", "Mail console (same as F4)"),
+        ("p", "Add mail persona (same as F6)"),
+        ("d", "Doctor (same as F7)"),
+        ("q", "Quit (same as F12)"),
     ]),
 ]
 
@@ -2200,24 +2214,36 @@ class DarkcatApp(App):
     # Avoid ctrl+h / ctrl+i / ctrl+m — those share byte codes with Backspace,
     # Tab, and Enter in a TTY, so binding them would steal basic navigation
     # keys. Function keys are unambiguous on every modern terminal.
+    #
+    # F-keys are the canonical surface for top-level actions (F1..F12).
+    # Letter keys remain as aliases for muscle memory but hidden from the
+    # Footer to keep it readable.
     BINDINGS = [
-        Binding("f5",     "refresh_results", "Refresh"),
-        Binding("ctrl+r", "refresh_status",  "Rescan"),
-        Binding("ctrl+e", "export_results",  "Export"),
-        Binding("ctrl+c", "cancel_crawl",    "Abort"),
-        Binding("f3",     "show_stats",      "Stats"),
-        Binding("ctrl+y", "copy_url",        "Copy URL"),
-        Binding("f4",     "mirrors_of_row",  "Mirrors"),
-        Binding("f6",     "history_of_row",  "History"),
-        Binding("question_mark", "show_score_help", "Score?"),
-        Binding("f1",     "show_about",       "About"),
-        Binding("f2",     "show_keymap",      "Keys"),
-        Binding("i",      "show_identity",    "Identity"),
-        Binding("c",      "show_chat",        "Chat"),
-        Binding("m",      "show_mail",        "Mail"),
-        Binding("p",      "show_persona_add", "Persona"),
-        Binding("d",      "show_doctor",      "Doctor"),
-        Binding("q",      "quit",            "Quit"),
+        Binding("f1",            "show_about",       "About"),
+        Binding("f2",            "show_keymap",      "Keys"),
+        Binding("f3",            "show_chat_hub",    "ChatHub"),
+        Binding("f4",            "show_mail",        "Mail"),
+        Binding("f5",            "show_identity",    "Identity"),
+        Binding("f6",            "show_persona_add", "Persona"),
+        Binding("f7",            "show_doctor",      "Doctor"),
+        Binding("f8",            "show_stats",       "Stats"),
+        Binding("f9",            "mirrors_of_row",   "Mirrors"),
+        Binding("f10",           "history_of_row",   "History"),
+        Binding("f11",           "show_examples",    "Examples"),
+        Binding("f12",           "quit",             "Quit"),
+        Binding("r",             "refresh_results",  "Refresh"),
+        Binding("ctrl+r",        "refresh_status",   "Rescan"),
+        Binding("ctrl+e",        "export_results",   "Export"),
+        Binding("ctrl+c",        "cancel_crawl",     "Abort"),
+        Binding("ctrl+y",        "copy_url",         "Copy URL"),
+        Binding("question_mark", "show_score_help",  "Score?"),
+        # Letter aliases — hidden from Footer (F-keys are canonical).
+        Binding("i", "show_identity",    "Identity", show=False),
+        Binding("c", "show_chat",        "Chat",     show=False),
+        Binding("m", "show_mail",        "Mail",     show=False),
+        Binding("p", "show_persona_add", "Persona",  show=False),
+        Binding("d", "show_doctor",      "Doctor",   show=False),
+        Binding("q", "quit",             "Quit",     show=False),
     ]
 
     crawling: reactive[bool] = reactive(False)
@@ -2394,8 +2420,8 @@ class DarkcatApp(App):
 
     def action_show_doctor(self) -> None:
         """Run the same self-checks as ``darkcat doctor`` and render them in
-        a ResultScreen — d. CLI / REPL / GUI all have a doctor surface; this
-        is the TUI's. Output is plain-text aligned (no markup) because
+        a ResultScreen — F7 / d. CLI / REPL / GUI all have a doctor surface;
+        this is the TUI's. Output is plain-text aligned (no markup) because
         ResultScreen renders verbatim — color parity with the CLI is a
         follow-up if it ever matters."""
         from darkcat.cli import doctor_run
@@ -2410,6 +2436,44 @@ class DarkcatApp(App):
             lines.append("")
         body = "\n".join(lines) if lines else "(no checks ran)"
         self.push_screen(ResultScreen("darkcat doctor", body))
+
+    def action_show_chat_hub(self) -> None:
+        """Open the multi-protocol Chat hub — F3. Aggregates conversations
+        from every logged-in chat backend (telegram, matrix, xmpp, simplex,
+        session, tox, briar, ricochet) into one tree view.
+
+        Phase 2 will replace this stub with the real ChatHubScreen. The
+        binding is wired now so users discover the F3 slot from day one."""
+        body = (
+            "Multi-protocol chat hub — coming in Phase 2.\n\n"
+            "The hub will aggregate conversations from every logged-in\n"
+            "chat backend into one tree view, grouped by protocol and\n"
+            "tagged by transport network (tor / i2p / clearnet).\n\n"
+            "Until then, press 'c' to open the per-persona chat console\n"
+            "(login / list / read / send / join / leave / connect)."
+        )
+        self.push_screen(ResultScreen("Chat hub", body))
+
+    def action_show_examples(self) -> None:
+        """Open the examples cheatsheet — F11. Curated worked examples for
+        common workflows (signup, login, send-message, fetch-peer, enable
+        transport, etc.) rendered with Rich markup.
+
+        Phase 3 will replace this stub with the real ExamplesScreen. The
+        binding is wired now so the F11 slot is reserved from day one."""
+        body = (
+            "Examples cheatsheet — coming in Phase 3.\n\n"
+            "Will surface curated, copy-pasteable examples for:\n"
+            "  - Create a persona / encrypt the vault\n"
+            "  - Login to Telegram / Matrix / XMPP / Simplex / Session\n"
+            "  - Send a message through Simplex / Session\n"
+            "  - Login to ProtonMail / Tutanota / Disroot SMTP+IMAP\n"
+            "  - Fetch a Tor / I2P / Gemini page\n"
+            "  - Walk Tor / I2P peer lists\n"
+            "  - Enable / re-probe transports\n"
+            "Each entry shows the exact CLI / REPL / TUI / GUI path."
+        )
+        self.push_screen(ResultScreen("Examples", body))
 
     def action_show_score_help(self) -> None:
         """Dump the score / category formula into the log on `?`. Renders as

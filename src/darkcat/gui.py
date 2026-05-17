@@ -387,7 +387,7 @@ class DarkcatGUI:
         )
         file_menu.add_separator()
         file_menu.add_command(
-            label="Quit", accelerator="Ctrl+Q",
+            label="Quit", accelerator="Ctrl+Q / F12",
             command=self._on_close,
         )
         menubar.add_cascade(label="File", menu=file_menu)
@@ -398,7 +398,7 @@ class DarkcatGUI:
             activebackground=NEON_PINK, activeforeground=DEEP_BG,
         )
         view_menu.add_command(
-            label="Refresh results", accelerator="F5",
+            label="Refresh results",
             command=self._refresh_results,
         )
         view_menu.add_command(
@@ -406,7 +406,7 @@ class DarkcatGUI:
             command=self._refresh_status_async,
         )
         view_menu.add_command(
-            label="Database statistics", accelerator="Ctrl+I",
+            label="Database statistics", accelerator="F8 / Ctrl+I",
             command=self._show_stats,
         )
         view_menu.add_separator()
@@ -422,7 +422,7 @@ class DarkcatGUI:
             activebackground=NEON_PINK, activeforeground=DEEP_BG,
         )
         identity_menu.add_command(
-            label="Open vault…", accelerator="Ctrl+Shift+I",
+            label="Open vault…", accelerator="F5 / Ctrl+Shift+I",
             command=self._show_identity,
         )
         menubar.add_cascade(label="Identity", menu=identity_menu)
@@ -431,6 +431,10 @@ class DarkcatGUI:
             menubar, tearoff=0,
             bg=PANEL_BG, fg=NEON_GREEN,
             activebackground=NEON_PINK, activeforeground=DEEP_BG,
+        )
+        chat_menu.add_command(
+            label="Chat hub…", accelerator="F3",
+            command=self._show_chat_hub,
         )
         chat_menu.add_command(
             label="Chat console…", accelerator="Ctrl+Shift+C",
@@ -444,14 +448,25 @@ class DarkcatGUI:
             activebackground=NEON_PINK, activeforeground=DEEP_BG,
         )
         mail_menu.add_command(
-            label="Mail console…", accelerator="Ctrl+Shift+M",
+            label="Mail console…", accelerator="F4 / Ctrl+Shift+M",
             command=self._show_mail,
         )
         mail_menu.add_command(
-            label="Add mail persona…",
+            label="Add mail persona…", accelerator="F6",
             command=self._show_persona_add,
         )
         menubar.add_cascade(label="Mail", menu=mail_menu)
+
+        tools_menu = tk.Menu(
+            menubar, tearoff=0,
+            bg=PANEL_BG, fg=NEON_GREEN,
+            activebackground=NEON_PINK, activeforeground=DEEP_BG,
+        )
+        tools_menu.add_command(
+            label="Doctor…", accelerator="F7",
+            command=self._show_doctor,
+        )
+        menubar.add_cascade(label="Tools", menu=tools_menu)
 
         help_menu = tk.Menu(
             menubar, tearoff=0,
@@ -463,8 +478,8 @@ class DarkcatGUI:
             command=self._show_shortcuts,
         )
         help_menu.add_command(
-            label="Run doctor…",
-            command=self._show_doctor,
+            label="Examples…", accelerator="F11",
+            command=self._show_examples,
         )
         help_menu.add_command(
             label="About darkcat…", accelerator="F1",
@@ -911,7 +926,20 @@ class DarkcatGUI:
             ).pack(side="left", padx=(4, 0))
 
     def _bind_shortcuts(self) -> None:
-        self.root.bind("<F5>",       lambda _e: self._refresh_results())
+        # Function keys (F1..F12) — the canonical top-level surface. Mirrors
+        # the TUI's DarkcatApp.BINDINGS map so the two frontends share one
+        # mental model. Ctrl-shortcuts are kept as aliases for users with
+        # muscle memory from the pre-F-key layout.
+        self.root.bind("<F1>",  lambda _e: self._show_about())
+        self.root.bind("<F2>",  lambda _e: self._show_shortcuts())
+        self.root.bind("<F3>",  lambda _e: self._show_chat_hub())
+        self.root.bind("<F4>",  lambda _e: self._show_mail())
+        self.root.bind("<F5>",  lambda _e: self._show_identity())
+        self.root.bind("<F6>",  lambda _e: self._show_persona_add())
+        self.root.bind("<F7>",  lambda _e: self._show_doctor())
+        self.root.bind("<F8>",  lambda _e: self._show_stats())
+        self.root.bind("<F11>", lambda _e: self._show_examples())
+        self.root.bind("<F12>", lambda _e: self._on_close())
         self.root.bind("<Control-r>", lambda _e: self._refresh_status_async())
         # Ctrl+C is overloaded — Tk uses it to copy selected text from Entry/
         # Text widgets. If the focused widget owns a text selection, we let
@@ -922,8 +950,6 @@ class DarkcatGUI:
         self.root.bind("<Control-e>", lambda _e: self._export_results())
         self.root.bind("<Control-i>", lambda _e: self._show_stats())
         self.root.bind("<Control-q>", lambda _e: self._on_close())
-        self.root.bind("<F1>",        lambda _e: self._show_about())
-        self.root.bind("<F2>",        lambda _e: self._show_shortcuts())
         self.root.bind("<Control-I>", lambda _e: self._show_identity())
         self.root.bind("<Control-C>", lambda _e: self._show_chat())
         self.root.bind("<Control-M>", lambda _e: self._show_mail())
@@ -1404,6 +1430,90 @@ class DarkcatGUI:
         dlg.grab_set()
         dlg.focus_set()
 
+    def _show_chat_hub(self) -> None:
+        """Stub for the multi-protocol Chat hub — F3 / Chat → Chat hub.
+
+        Phase 2 will replace this with the real ChatHubWindow that
+        aggregates conversations from every logged-in chat backend into
+        one tree view, grouped by protocol and tagged by transport
+        network. The binding + menu entry is wired now so users can
+        discover the F3 slot from day one."""
+        self._popup_message(
+            title="darkcat — chat hub",
+            heading="Multi-protocol chat hub",
+            body=(
+                "Coming in Phase 2.\n\n"
+                "The hub will aggregate conversations from every logged-in "
+                "chat backend into one tree view, grouped by protocol "
+                "(telegram / matrix / xmpp / simplex / session / tox / "
+                "briar / ricochet) and tagged by transport network "
+                "(tor / i2p / clearnet).\n\n"
+                "Until then, use Chat → Chat console (Ctrl+Shift+C) to "
+                "drive a single persona at a time."
+            ),
+        )
+
+    def _show_examples(self) -> None:
+        """Stub for the examples cheatsheet — F11 / Help → Examples.
+
+        Phase 3 will replace this with the real ExamplesWindow rendering
+        curated worked examples for common workflows (signup, login,
+        send-message, fetch-peer, enable-transport, etc.). The binding +
+        menu entry is wired now so the F11 slot is reserved from day one."""
+        self._popup_message(
+            title="darkcat — examples",
+            heading="Examples cheatsheet",
+            body=(
+                "Coming in Phase 3.\n\n"
+                "Will surface copy-pasteable examples for:\n"
+                "  • Create a persona / encrypt the vault\n"
+                "  • Login to Telegram / Matrix / XMPP / Simplex / Session\n"
+                "  • Send a message through Simplex / Session\n"
+                "  • Login to ProtonMail / Tutanota / Disroot SMTP+IMAP\n"
+                "  • Fetch a Tor / I2P / Gemini page\n"
+                "  • Walk Tor / I2P peer lists\n"
+                "  • Enable / re-probe transports\n\n"
+                "Each entry will show the exact CLI / REPL / TUI / GUI path."
+            ),
+        )
+
+    def _popup_message(self, *, title: str, heading: str, body: str) -> None:
+        """Reusable info dialog — same look as the doctor / examples panels.
+        Centered, single Close button, Esc / Enter dismiss. Kept here so the
+        Phase 1 stubs share styling with the rest of the GUI dialogs."""
+        dlg = tk.Toplevel(self.root)
+        dlg.title(title)
+        dlg.configure(bg=DEEP_BG)
+        dlg.transient(self.root)
+        dlg.resizable(False, False)
+        try:
+            self.root.update_idletasks()
+            px = self.root.winfo_rootx() + max(0, (self.root.winfo_width() - 560) // 2)
+            py = self.root.winfo_rooty() + max(0, (self.root.winfo_height() - 360) // 3)
+            dlg.geometry(f"560x360+{px}+{py}")
+        except tk.TclError:
+            dlg.geometry("560x360")
+
+        frame = tk.Frame(dlg, bg=DEEP_BG, padx=18, pady=14)
+        frame.pack(fill="both", expand=True)
+        tk.Label(
+            frame, text=heading,
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(anchor="w", pady=(0, 10))
+        tk.Label(
+            frame, text=body,
+            fg=NEON_GREEN, bg=DEEP_BG, font=(self._mono, 10),
+            wraplength=520, justify="left",
+        ).pack(anchor="w")
+        ttk.Button(
+            frame, text="Close", command=dlg.destroy, style="Run.TButton",
+        ).pack(pady=(14, 0))
+        dlg.bind("<Escape>", lambda _e: dlg.destroy())
+        dlg.bind("<Return>", lambda _e: dlg.destroy())
+        dlg.protocol("WM_DELETE_WINDOW", dlg.destroy)
+        dlg.grab_set()
+        dlg.focus_set()
+
     def _show_shortcuts(self) -> None:
         """Modal listing every GUI keyboard shortcut grouped by intent.
 
@@ -1412,26 +1522,38 @@ class DarkcatGUI:
         Bound to F2 and reachable from Help → Keyboard shortcuts.
         """
         groups: list[tuple[str, list[tuple[str, str]]]] = [
+            ("Main menus (Function keys)", [
+                ("F1",  "About darkcat"),
+                ("F2",  "This keyboard-shortcuts dialog"),
+                ("F3",  "Chat hub — aggregated multi-protocol view"),
+                ("F4",  "Mail console (SMTP / IMAP per persona)"),
+                ("F5",  "Identity vault"),
+                ("F6",  "Add mail persona (preset picker)"),
+                ("F7",  "Doctor — self-checks for transports, deps, vault"),
+                ("F8",  "Database statistics"),
+                ("F11", "Examples cheatsheet — common workflows"),
+                ("F12", "Quit darkcat"),
+            ]),
             ("Run a crawl", [
                 ("Enter (in any form field)", "Start a crawl with the current values"),
                 ("Ctrl+C",                    "Abort the running crawl"),
-                ("F5",                        "Refresh the results table"),
                 ("Ctrl+R",                    "Re-probe transports (rescan pills)"),
             ]),
             ("Inspect a result", [
                 ("Right-click a row",   "Copy URL · Fetch · Mirrors · History"),
-                ("Ctrl+I",              "Show database statistics"),
                 ("Ctrl+E",              "Export current results to .txt"),
+                ("Ctrl+L",              "Clear the log panel"),
             ]),
             ("Search & fetch", [
                 ("Type in 'search' + Enter",   "FTS5 search across crawled pages"),
                 ("Type in 'fetch URL' + Enter","Fetch one URL through the right transport"),
             ]),
-            ("Help & info", [
-                ("F1",       "About darkcat (logo, version, license, source)"),
-                ("F2",       "This keyboard-shortcuts dialog"),
-                ("Ctrl+L",   "Clear the log panel"),
-                ("Ctrl+Q",   "Quit darkcat"),
+            ("Ctrl aliases (kept for muscle memory)", [
+                ("Ctrl+Shift+I", "Identity vault (same as F5)"),
+                ("Ctrl+Shift+C", "Chat console — per-persona send/check"),
+                ("Ctrl+Shift+M", "Mail console (same as F4)"),
+                ("Ctrl+I",       "Database statistics (same as F8)"),
+                ("Ctrl+Q",       "Quit (same as F12)"),
             ]),
         ]
 
