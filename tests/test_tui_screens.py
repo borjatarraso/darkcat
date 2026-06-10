@@ -32,8 +32,10 @@ from textual.app import App, ComposeResult
 from textual.widgets import Static
 
 from darkcat.tui import (
+    ChatHubScreen,
     ChatScreen,
     ConfirmRevealScreen,
+    ExamplesScreen,
     IdentityEditScreen,
     IdentityScreen,
     LinkScreen,
@@ -581,5 +583,88 @@ def test_mail_screen_send_threads_cc_bcc_reply_to_into_namespace(tmp_path, monke
             assert ns2.cc is None
             assert ns2.bcc is None
             assert ns2.reply_to is None
+
+    _run(go())
+
+
+def test_examples_screen_mounts_and_filters():
+    """ExamplesScreen must mount, populate from the catalog, narrow its
+    list when the search Input fires, and dismiss cleanly on Escape.
+    Headless guard against a regression where the sidebar/body widgets
+    are renamed or the search wiring drops."""
+    from darkcat import help_examples as he
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            captured: list = []
+            await app.push_screen(ExamplesScreen(), captured.append)
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ExamplesScreen)
+
+            # Empty query → full catalog visible.
+            assert len(screen._filtered) == len(he.EXAMPLES)
+
+            # Narrow to a single known id and verify the filter applies.
+            sample = he.EXAMPLES[0]
+            from textual.widgets import Input
+            search = screen.query_one("#search-input", Input)
+            search.value = sample.id
+            await pilot.pause()
+            assert sample in screen._filtered
+            assert all(sample.id in ex.id or sample.id in ex.title.lower()
+                       or sample.id in ex.description.lower()
+                       or sample.id in " ".join(ex.tags).lower()
+                       for ex in screen._filtered)
+
+            # Clear → back to full catalog.
+            search.value = ""
+            await pilot.pause()
+            assert len(screen._filtered) == len(he.EXAMPLES)
+
+            await pilot.press("escape")
+            await pilot.pause()
+            assert captured == [None]
+
+    _run(go())
+
+
+def test_chat_hub_screen_mounts_and_dismisses(tmp_path, monkeypatch):
+    """ChatHubScreen must mount without raising, render the header /
+    status / DataTable, and dismiss cleanly on Escape. The aggregator
+    is monkey-patched to return a single fake entry so the test never
+    touches the real persona vault."""
+    from darkcat import hub_config
+    from darkcat.chat import hub as chat_hub
+    from darkcat.chat.base import ChatChannel
+    monkeypatch.setattr(hub_config, "HUB_CONFIG_PATH",
+                        tmp_path / "hub.json")
+    hub_config.set_interval(0)  # disable auto-refresh during the test
+
+    fake_entry = chat_hub.HubEntry(
+        persona_name="alice", network="fake", transport="tor:abc",
+        channels=[ChatChannel(id="c1", name="general", unread=1)],
+        status=chat_hub.STATUS_OK,
+    )
+    monkeypatch.setattr(chat_hub, "aggregate", lambda *a, **kw: [fake_entry])
+
+    async def go():
+        app = _Host()
+        async with app.run_test() as pilot:
+            captured: list = []
+            await app.push_screen(ChatHubScreen(), captured.append)
+            await pilot.pause()
+            screen = app.screen
+            assert isinstance(screen, ChatHubScreen)
+            # Wait a beat for the worker thread to post results.
+            for _ in range(20):
+                await pilot.pause(0.05)
+                if screen._entries:
+                    break
+            assert any(e.persona_name == "alice" for e in screen._entries)
+            await pilot.press("escape")
+            await pilot.pause()
+            assert captured == [None]
 
     _run(go())

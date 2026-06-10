@@ -988,6 +988,32 @@ def _build_parser() -> argparse.ArgumentParser:
     pchats.add_parser("backends",
                       help="Show which chat backends are installed and ready.")
 
+    pchathub = pchats.add_parser(
+        "hub",
+        help="Multi-protocol chat hub: aggregate channels across every "
+             "chat persona in one view.",
+        description=(
+            "Walks the persona vault, finds every account whose provider "
+            "is a known chat backend (telegram, matrix, xmpp, simplex, "
+            "session, tox, briar, ricochet), and prints all their "
+            "channels in a single table — one block per persona, tagged "
+            "with the transport network the account was created over.\n\n"
+            "Use --interval to persist the auto-refresh cadence the TUI "
+            "and GUI hub use (10s / 30s / 1m / 10m / 30m / 1h / off / "
+            "<seconds>). The CLI itself prints one snapshot and exits."
+        ),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pchathub.add_argument("--networks", default=None,
+                          help="Comma-separated subset (e.g. matrix,telegram).")
+    pchathub.add_argument("-n", "--limit", type=int, default=20,
+                          help="Per-persona channel cap (default 20).")
+    pchathub.add_argument("--json", action="store_true",
+                          help="Emit JSON instead of a Rich table.")
+    pchathub.add_argument("--interval", default=None,
+                          help="Persist auto-refresh interval and exit "
+                               "(e.g. 30s, 1m, off).")
+
     pchatlog = pchats.add_parser("login",
                                  help="Authenticate (interactive — phone code, password, ...).")
     pchatlog.add_argument("network",
@@ -1418,6 +1444,24 @@ def _build_parser() -> argparse.ArgumentParser:
     sub.add_parser("shell", help="Launch the interactive REPL.")
     sub.add_parser("gui", help="Launch the Tkinter desktop GUI.")
 
+    pex = sub.add_parser(
+        "examples",
+        help="Curated worked examples for common workflows.",
+        description=(
+            "Renders the same cheatsheet the TUI (F11) and GUI "
+            "(Help → Examples / F11) expose: signup, login, send "
+            "message, fetch peers, enable transport, etc. With no "
+            "arguments prints the index; pass an example id to show a "
+            "single recipe; pass --search to filter by substring."),
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
+    pex.add_argument("example_id", nargs="?", default=None,
+                     help="Example id (e.g. 'chat-hub', 'mail-send-protonmail').")
+    pex.add_argument("--search", default=None,
+                     help="Substring filter over id/title/description/tags.")
+    pex.add_argument("--ids", action="store_true",
+                     help="Print just the ids, one per line (for shell completion).")
+
     return p
 
 
@@ -1528,6 +1572,46 @@ def cmd_init(cfg: Config, args: argparse.Namespace) -> int:
 def cmd_about() -> int:
     """Print the About panel: logo + version + license + source URL."""
     console.print(about_panel(__version__, url=__url__, license_str=__license__))
+    return 0
+
+
+def cmd_examples(args: argparse.Namespace) -> int:
+    """Render the worked-examples cheatsheet.
+
+    No args → index grouped by category.
+    An ``example_id`` arg → render that one entry in full.
+    ``--search Q`` → filter by substring across id/title/description/tags.
+    ``--list`` → bare ids (one per line) for shell completion.
+    """
+    from darkcat import help_examples
+
+    if args.ids:
+        for ex in help_examples.EXAMPLES:
+            print(ex.id)
+        return 0
+
+    if args.example_id:
+        ex = help_examples.find(args.example_id)
+        if ex is None:
+            err_console.print(
+                f"[fail]ERROR:[/] no example with id {args.example_id!r}; "
+                f"see `darkcat examples` for the index."
+            )
+            return 2
+        console.print(help_examples.render_one(ex))
+        return 0
+
+    if args.search:
+        matches = help_examples.search(args.search)
+        if not matches:
+            console.print(f"[muted](no examples match {args.search!r})[/]")
+            return 0
+        for ex in matches:
+            console.print(help_examples.render_one(ex))
+            console.print()
+        return 0
+
+    console.print(help_examples.render_index())
     return 0
 
 
@@ -3952,6 +4036,86 @@ def cmd_chat(cfg: Config, args: argparse.Namespace) -> int:
                 console.print(f"  [key]{r['network']:<9}[/] {r['hint']}")
         return 0
 
+    if args.action == "hub":
+        import os as _os
+        from darkcat import hub_config
+        from darkcat.chat import hub as chat_hub
+        from darkcat.personas import Vault
+
+        if args.interval is not None:
+            try:
+                secs = hub_config.parse_interval(args.interval)
+            except ValueError as e:
+                err_console.print(f"[fail]ERROR:[/] {e}")
+                return 2
+            stored = hub_config.set_interval(secs)
+            label = hub_config.interval_label(stored)
+            console.print(
+                f"[ok]+[/] hub auto-refresh set to "
+                f"[value]{label}[/] ({stored}s)"
+            )
+            return 0
+
+        passphrase = _os.environ.get("DARKCAT_VAULT_PASSPHRASE") or None
+        try:
+            vault = Vault(passphrase=passphrase)
+        except RuntimeError as e:
+            err_console.print(f"[fail]ERROR:[/] {e}")
+            return 2
+
+        networks = None
+        if args.networks:
+            networks = [n.strip() for n in args.networks.split(",") if n.strip()]
+        entries = chat_hub.aggregate(vault, networks=networks, limit=args.limit)
+
+        if args.json:
+            print(_json.dumps(
+                [e.to_dict() for e in entries], indent=2, default=str))
+            return 0
+
+        if not entries:
+            console.print(
+                "[muted](no chat personas — create one with "
+                "`darkcat personas add --preset matrix.tchncs.de` or similar)[/]"
+            )
+            return 0
+
+        for entry in entries:
+            head = (
+                f"[value]{entry.persona_name}[/] "
+                f"[muted]·[/] [key]{entry.network}[/]"
+            )
+            if entry.transport:
+                head += f" [muted]·[/] [muted]{entry.transport}[/]"
+            head += f" [muted]({entry.elapsed_ms} ms)[/]"
+            console.print(head)
+            if entry.status in (chat_hub.STATUS_AUTH,
+                                chat_hub.STATUS_ERROR,
+                                chat_hub.STATUS_UNAVAILABLE):
+                console.print(f"  [fail]{entry.status}[/]: {entry.error}")
+                continue
+            if not entry.channels:
+                console.print("  [muted](no channels)[/]")
+                continue
+            t = table("ID", "KIND", "NAME", "PEOPLE", "UNREAD")
+            for c in entry.channels:
+                t.add_row(
+                    str(c.id), c.kind, _truncate(c.name, 50),
+                    str(c.participants), str(c.unread),
+                )
+            console.print(t)
+
+        totals = chat_hub.summarize(entries)
+        interval_lbl = hub_config.interval_label(hub_config.get_interval())
+        console.print(
+            f"[muted]hub:[/] {totals['personas']} persona(s), "
+            f"{totals['channels']} channel(s), "
+            f"{totals['unread']} unread, "
+            f"{totals['errors']} error(s) "
+            f"[muted]· refresh {interval_lbl}[/]"
+        )
+        return 0
+
     vault, persona = _load_persona_or_die(args.persona)
     if persona is None:
         return 2
@@ -4710,6 +4874,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         "tui":      lambda: cmd_tui(cfg),
         "shell":    lambda: cmd_shell(cfg),
         "gui":      lambda: cmd_gui(cfg),
+        "examples": lambda: cmd_examples(args),
     }
     handler = dispatch.get(args.cmd)
     if not handler:

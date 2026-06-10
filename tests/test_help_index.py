@@ -113,10 +113,14 @@ def test_tui_keymap_screen_groups_cover_intent() -> None:
     pytest.importorskip("textual")
     from darkcat.tui import _KEYMAP_GROUPS  # imported lazily to avoid Textual cost
     titles = [g for g, _items in _KEYMAP_GROUPS]
-    # We don't pin the exact phrasing, but the four buckets must be there:
-    # crawling, inspecting, search/fetch, help.
+    # We don't pin the exact phrasing, but the buckets must be there:
+    # crawling, inspecting, search/fetch, and the F-key main menu
+    # (which hosts About/Keys/Examples — the help-discovery surface).
     joined = " | ".join(titles).lower()
     assert "crawl" in joined
     assert "inspect" in joined or "result" in joined
     assert "search" in joined or "fetch" in joined
-    assert "help" in joined or "info" in joined
+    assert (
+        "help" in joined or "info" in joined
+        or "menu" in joined or "function" in joined
+    )

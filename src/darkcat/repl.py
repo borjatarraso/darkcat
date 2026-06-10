@@ -136,7 +136,7 @@ _SUBACTIONS: dict[str, tuple[str, ...]] = {
     "identity":  ("new", "list", "show", "confirm", "edit",
                   "rotate-password", "burn", "link", "unlink",
                   "export", "providers", "launch"),
-    "chat":      ("backends", "login", "list", "read", "send", "ingest",
+    "chat":      ("backends", "hub", "login", "list", "read", "send", "ingest",
                   "join", "leave", "connect", "addcontact"),
     "mail":      ("send", "check"),
     "personas":  ("add", "mail-providers", "list", "show", "remove",
@@ -436,6 +436,26 @@ class DarkcatShell(cmd.Cmd):
     def do_doctor(self, _arg: str) -> None:
         """Health check: home dir, DB, daemons, optional deps. Prints fix hints."""
         cmd_doctor(self.cfg)
+
+    def do_examples(self, arg: str) -> None:
+        """examples [ID|--search Q]   Render the cheatsheet (TUI F11 / GUI F11).
+
+        With no arg, prints the category-grouped index. With an example
+        id (e.g. `examples chat-hub`), prints just that recipe with the
+        CLI/REPL/TUI/GUI paths. With `--search Q`, filters."""
+        import argparse as _ap
+        toks = self._split(arg) or []
+        p = _ap.ArgumentParser(prog="examples", add_help=False)
+        p.add_argument("example_id", nargs="?", default=None)
+        p.add_argument("--search", default=None)
+        p.add_argument("--ids", action="store_true")
+        try:
+            ns = p.parse_args(toks)
+        except SystemExit:
+            print("usage: examples [ID] [--search Q] [--ids]")
+            return
+        from darkcat import cli as _cli
+        _cli.cmd_examples(ns)
 
     # ---- transport control ---------------------------------------------
 

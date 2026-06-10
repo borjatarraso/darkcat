@@ -287,6 +287,479 @@ class Tooltip:
             self._tip = None
 
 
+class ChatHubWindow:
+    """Multi-protocol chat hub — F3 / Chat → Chat hub.
+
+    Aggregates every chat-capable persona into one Treeview and
+    auto-refreshes on the interval persisted in ``~/.darkcat/hub.json``
+    (default 30s). The Combobox cycles the presets (10s / 30s / 1m /
+    10m / 30m / 1h / off) plus a free-text seconds field for custom
+    cadences; `r` triggers a manual refresh; Esc closes.
+
+    Each refresh runs the aggregator on a worker thread and posts the
+    result back via a queue so the Tk main loop stays responsive even
+    when a backend's ``connect()`` blocks on network I/O.
+    """
+
+    _PRESET_LABELS = ("10s", "30s", "1m", "10m", "30m", "1h", "off")
+
+    def __init__(self, parent: tk.Tk, *, mono: str = "TkFixedFont") -> None:
+        self.parent = parent
+        self._mono = mono
+        self._queue: "queue.Queue[object]" = queue.Queue()
+        self._busy: bool = False
+        self._after_id: Optional[str] = None
+        self._refresh_after_id: Optional[str] = None
+        self._last_refresh_ts: float = 0.0
+        self._entries: list = []
+
+        self.dlg = tk.Toplevel(parent)
+        self.dlg.title("darkcat — chat hub")
+        self.dlg.configure(bg=DEEP_BG)
+        self.dlg.transient(parent)
+        self.dlg.geometry("860x520")
+        self.dlg.protocol("WM_DELETE_WINDOW", self._close)
+        self.dlg.bind("<Escape>", lambda _e: self._close())
+        self.dlg.bind("r",        lambda _e: self._kick_refresh())
+        self.dlg.bind("<F5>",     lambda _e: self._kick_refresh())
+
+        # ---- header ----------------------------------------------------
+        header = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=10)
+        header.pack(fill="x")
+        tk.Label(
+            header, text="Multi-protocol chat hub",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(side="left")
+
+        # Refresh-interval combobox on the right.
+        right = tk.Frame(header, bg=DEEP_BG)
+        right.pack(side="right")
+        tk.Label(
+            right, text="Refresh every:",
+            fg=NEON_GREEN, bg=DEEP_BG, font=(self._mono, 10),
+        ).pack(side="left", padx=(0, 6))
+        self.interval_var = tk.StringVar()
+        self.combo = ttk.Combobox(
+            right, textvariable=self.interval_var,
+            values=self._PRESET_LABELS, width=8, state="normal",
+        )
+        self.combo.pack(side="left")
+        self.combo.bind("<<ComboboxSelected>>", lambda _e: self._on_interval_changed())
+        self.combo.bind("<Return>",             lambda _e: self._on_interval_changed())
+        ttk.Button(
+            right, text="Refresh now",
+            command=self._kick_refresh, style="Run.TButton",
+        ).pack(side="left", padx=(8, 0))
+
+        # ---- treeview --------------------------------------------------
+        body = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=4)
+        body.pack(fill="both", expand=True)
+        cols = ("network", "transport", "channels", "unread", "status")
+        self.tree = ttk.Treeview(
+            body, columns=cols, show="tree headings", height=18,
+        )
+        self.tree.heading("#0",        text="Persona")
+        self.tree.heading("network",   text="Network")
+        self.tree.heading("transport", text="Transport")
+        self.tree.heading("channels",  text="Channels")
+        self.tree.heading("unread",    text="Unread")
+        self.tree.heading("status",    text="Status")
+        self.tree.column("#0",         width=200, anchor="w")
+        self.tree.column("network",    width=90,  anchor="w")
+        self.tree.column("transport",  width=170, anchor="w")
+        self.tree.column("channels",   width=80,  anchor="center")
+        self.tree.column("unread",     width=80,  anchor="center")
+        self.tree.column("status",     width=220, anchor="w")
+        vsb = ttk.Scrollbar(body, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        self.tree.pack(side="left", fill="both", expand=True)
+        vsb.pack(side="right", fill="y")
+
+        # ---- footer ----------------------------------------------------
+        footer = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=8)
+        footer.pack(fill="x", side="bottom")
+        self.status_lbl = tk.Label(
+            footer, text="(loading…)",
+            fg=NEON_GREEN, bg=DEEP_BG, font=(self._mono, 10),
+            anchor="w", justify="left",
+        )
+        self.status_lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            footer, text="Close", command=self._close, style="Run.TButton",
+        ).pack(side="right")
+
+        # Sync combobox to persisted interval, then start the loops.
+        self._sync_interval_to_combo()
+        self._poll_queue()
+        self._kick_refresh()
+        self._schedule_next_refresh()
+
+        self.dlg.focus_set()
+
+    # ---- interval combobox --------------------------------------------
+
+    def _sync_interval_to_combo(self) -> None:
+        from darkcat import hub_config
+        self.interval_var.set(hub_config.interval_label(hub_config.get_interval()))
+
+    def _on_interval_changed(self) -> None:
+        from darkcat import hub_config
+        raw = self.interval_var.get().strip()
+        try:
+            secs = hub_config.parse_interval(raw)
+        except ValueError:
+            messagebox.showerror(
+                "darkcat — chat hub",
+                f"Invalid refresh interval: {raw!r}\n\n"
+                f"Use a preset (10s / 30s / 1m / 10m / 30m / 1h / off) "
+                f"or a number of seconds.",
+                parent=self.dlg,
+            )
+            self._sync_interval_to_combo()
+            return
+        hub_config.set_interval(secs)
+        self._sync_interval_to_combo()
+        self._reschedule_refresh()
+        self._render_status()
+
+    # ---- refresh loop --------------------------------------------------
+
+    def _schedule_next_refresh(self) -> None:
+        from darkcat import hub_config
+        self._cancel_refresh_after()
+        secs = hub_config.get_interval()
+        if secs > 0:
+            self._refresh_after_id = self.dlg.after(
+                secs * 1000, self._tick_refresh,
+            )
+
+    def _reschedule_refresh(self) -> None:
+        self._schedule_next_refresh()
+
+    def _cancel_refresh_after(self) -> None:
+        if self._refresh_after_id is not None:
+            try:
+                self.dlg.after_cancel(self._refresh_after_id)
+            except tk.TclError:
+                pass
+            self._refresh_after_id = None
+
+    def _tick_refresh(self) -> None:
+        self._refresh_after_id = None
+        self._kick_refresh()
+        self._schedule_next_refresh()
+
+    def _kick_refresh(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self._render_status(loading=True)
+        threading.Thread(target=self._refresh_worker, daemon=True).start()
+
+    def _refresh_worker(self) -> None:
+        try:
+            import os
+            from darkcat.chat import hub as chat_hub
+            from darkcat.personas import Vault
+
+            passphrase = os.environ.get("DARKCAT_VAULT_PASSPHRASE") or None
+            vault = Vault(passphrase=passphrase)
+            entries = chat_hub.aggregate(vault)
+            self._queue.put(("done", entries))
+        except Exception as e:  # noqa: BLE001
+            self._queue.put(("error", f"{type(e).__name__}: {e}"))
+
+    def _poll_queue(self) -> None:
+        try:
+            while True:
+                kind, payload = self._queue.get_nowait()
+                if kind == "done":
+                    self._entries = payload
+                    self._last_refresh_ts = time.time()
+                    self._busy = False
+                    self._render_tree()
+                    self._render_status()
+                elif kind == "error":
+                    self._busy = False
+                    self.status_lbl.configure(
+                        text=f"refresh failed: {payload}",
+                        fg="#ff1a4b",
+                    )
+        except queue.Empty:
+            pass
+        self._after_id = self.dlg.after(150, self._poll_queue)
+
+    # ---- rendering -----------------------------------------------------
+
+    def _render_tree(self) -> None:
+        from darkcat.chat import hub as chat_hub
+
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        for entry in self._entries:
+            unread = sum(int(c.unread or 0) for c in entry.channels)
+            status_lbl = entry.status
+            if entry.error and entry.status in (
+                chat_hub.STATUS_AUTH,
+                chat_hub.STATUS_ERROR,
+                chat_hub.STATUS_UNAVAILABLE,
+            ):
+                status_lbl = f"{entry.status}: {entry.error[:60]}"
+            self.tree.insert(
+                "", "end",
+                text=entry.persona_name,
+                values=(
+                    entry.network,
+                    entry.transport or "-",
+                    len(entry.channels),
+                    unread,
+                    status_lbl,
+                ),
+            )
+
+    def _render_status(self, *, loading: bool = False) -> None:
+        from darkcat import hub_config
+        from darkcat.chat import hub as chat_hub
+        totals = chat_hub.summarize(self._entries)
+        interval_lbl = hub_config.interval_label(hub_config.get_interval())
+        last = (
+            time.strftime("%H:%M:%S", time.localtime(self._last_refresh_ts))
+            if self._last_refresh_ts else "—"
+        )
+        spinner = "  (refreshing…)" if loading else ""
+        self.status_lbl.configure(
+            text=(
+                f"refresh {interval_lbl} · last {last} · "
+                f"{totals['personas']} persona(s), "
+                f"{totals['channels']} channel(s), "
+                f"{totals['unread']} unread, "
+                f"{totals['errors']} error(s)"
+                f"{spinner}"
+            ),
+            fg=NEON_GREEN,
+        )
+
+    # ---- teardown ------------------------------------------------------
+
+    def _close(self) -> None:
+        if self._after_id is not None:
+            try:
+                self.dlg.after_cancel(self._after_id)
+            except tk.TclError:
+                pass
+            self._after_id = None
+        self._cancel_refresh_after()
+        try:
+            self.dlg.destroy()
+        except tk.TclError:
+            pass
+
+
+class ExamplesWindow:
+    """Examples cheatsheet — F11 / Help → Examples.
+
+    Treeview sidebar groups every entry from :mod:`darkcat.help_examples`
+    by category; the right pane renders the selected example with the
+    same four colour-coded frontend tags (CLI/REPL/TUI/GUI) used by the
+    CLI and TUI. A search Entry on top filters the sidebar live.
+    """
+
+    def __init__(self, parent: tk.Tk, *, mono: str = "TkFixedFont") -> None:
+        from darkcat import help_examples
+
+        self.parent = parent
+        self._mono = mono
+        self._he = help_examples
+        self._current_id: Optional[str] = None
+        self._search_var = tk.StringVar()
+
+        self.dlg = tk.Toplevel(parent)
+        self.dlg.title("darkcat — examples")
+        self.dlg.configure(bg=DEEP_BG)
+        self.dlg.transient(parent)
+        self.dlg.geometry("960x600")
+        self.dlg.protocol("WM_DELETE_WINDOW", self._close)
+        self.dlg.bind("<Escape>", lambda _e: self._close())
+        self.dlg.bind("<F1>",     lambda _e: self._focus_search())
+        self.dlg.bind("/",        lambda _e: self._focus_search())
+
+        # ---- header ----------------------------------------------------
+        header = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=10)
+        header.pack(fill="x")
+        tk.Label(
+            header, text="Examples cheatsheet",
+            fg=NEON_CYAN, bg=DEEP_BG, font=(self._mono, 13, "bold"),
+        ).pack(side="left")
+        tk.Label(
+            header,
+            text="curated worked examples · CLI · REPL · TUI · GUI",
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 10),
+        ).pack(side="left", padx=(12, 0))
+
+        # ---- search ----------------------------------------------------
+        search_row = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=4)
+        search_row.pack(fill="x")
+        tk.Label(
+            search_row, text="filter:",
+            fg=NEON_GREEN, bg=DEEP_BG, font=(self._mono, 10),
+        ).pack(side="left", padx=(0, 6))
+        self.search_entry = tk.Entry(
+            search_row, textvariable=self._search_var,
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", font=(self._mono, 10),
+        )
+        self.search_entry.pack(side="left", fill="x", expand=True)
+        self._search_var.trace_add("write", lambda *_: self._refresh_sidebar())
+
+        # ---- main body: sidebar tree + text pane -----------------------
+        body = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=4)
+        body.pack(fill="both", expand=True)
+
+        left = tk.Frame(body, bg=DEEP_BG)
+        left.pack(side="left", fill="y")
+        self.tree = ttk.Treeview(
+            left, show="tree", height=22, selectmode="browse",
+        )
+        self.tree.column("#0", width=300, anchor="w")
+        tvsb = ttk.Scrollbar(left, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=tvsb.set)
+        self.tree.pack(side="left", fill="y")
+        tvsb.pack(side="right", fill="y")
+        self.tree.bind("<<TreeviewSelect>>", lambda _e: self._on_select())
+
+        right = tk.Frame(body, bg=DEEP_BG, padx=8)
+        right.pack(side="left", fill="both", expand=True)
+        self.text = tk.Text(
+            right, wrap="word",
+            bg=PANEL_BG, fg=NEON_GREEN, insertbackground=NEON_GREEN,
+            relief="flat", font=(self._mono, 10), padx=10, pady=8,
+            state="disabled",
+        )
+        tvsb2 = ttk.Scrollbar(right, orient="vertical", command=self.text.yview)
+        self.text.configure(yscrollcommand=tvsb2.set)
+        self.text.pack(side="left", fill="both", expand=True)
+        tvsb2.pack(side="right", fill="y")
+
+        # Tk Text tags — one per coloured span we render below.
+        self.text.tag_configure("title",  foreground=NEON_CYAN, font=(self._mono, 12, "bold"))
+        self.text.tag_configure("meta",   foreground=DARK_GREEN, font=(self._mono, 9))
+        self.text.tag_configure("desc",   foreground=NEON_GREEN)
+        self.text.tag_configure("cmd",    foreground=NEON_GREEN, font=(self._mono, 10, "bold"))
+        self.text.tag_configure("note",   foreground=DARK_GREEN, font=(self._mono, 9, "italic"))
+        self.text.tag_configure("tags",   foreground=DIM_FG, font=(self._mono, 9))
+        self.text.tag_configure("cli",    foreground="#00e5ff", font=(self._mono, 10, "bold"))
+        self.text.tag_configure("repl",   foreground="#ff00aa", font=(self._mono, 10, "bold"))
+        self.text.tag_configure("tui",    foreground="#00ff66", font=(self._mono, 10, "bold"))
+        self.text.tag_configure("gui",    foreground="#ffb000", font=(self._mono, 10, "bold"))
+
+        # ---- footer ----------------------------------------------------
+        footer = tk.Frame(self.dlg, bg=DEEP_BG, padx=12, pady=8)
+        footer.pack(fill="x", side="bottom")
+        self.status_lbl = tk.Label(
+            footer, text="",
+            fg=DIM_FG, bg=DEEP_BG, font=(self._mono, 10),
+            anchor="w", justify="left",
+        )
+        self.status_lbl.pack(side="left", fill="x", expand=True)
+        ttk.Button(
+            footer, text="Close", command=self._close, style="Run.TButton",
+        ).pack(side="right")
+
+        self._refresh_sidebar()
+        self.dlg.after(50, self._focus_search)
+
+    # ---- sidebar -------------------------------------------------------
+
+    def _focus_search(self) -> None:
+        try:
+            self.search_entry.focus_set()
+        except tk.TclError:
+            pass
+
+    def _refresh_sidebar(self) -> None:
+        for item in self.tree.get_children():
+            self.tree.delete(item)
+        query = self._search_var.get().strip()
+        matches = self._he.search(query) if query else list(self._he.EXAMPLES)
+        match_ids = {ex.id for ex in matches}
+        first_id: Optional[str] = None
+        for cat in self._he.categories():
+            entries = [ex for ex in self._he.by_category(cat) if ex.id in match_ids]
+            if not entries:
+                continue
+            parent_id = self.tree.insert("", "end", text=cat, open=True)
+            for ex in entries:
+                node_id = self.tree.insert(
+                    parent_id, "end", iid=ex.id, text=f"  {ex.title}",
+                )
+                if first_id is None:
+                    first_id = ex.id
+        total = sum(1 for _ in matches)
+        self.status_lbl.configure(
+            text=(
+                f"{total} example(s)"
+                + (f" matching {query!r}" if query else "")
+            ),
+        )
+        if first_id is not None:
+            try:
+                self.tree.selection_set(first_id)
+                self.tree.see(first_id)
+            except tk.TclError:
+                pass
+            self._render_example(first_id)
+        else:
+            self._render_empty()
+
+    # ---- detail pane ---------------------------------------------------
+
+    def _on_select(self) -> None:
+        sel = self.tree.selection()
+        if not sel:
+            return
+        node_id = sel[0]
+        if self._he.find(node_id) is None:
+            return
+        self._render_example(node_id)
+
+    def _render_empty(self) -> None:
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", "(no examples match this filter)\n", "meta")
+        self.text.configure(state="disabled")
+        self._current_id = None
+
+    def _render_example(self, example_id: str) -> None:
+        ex = self._he.find(example_id)
+        if ex is None:
+            self._render_empty()
+            return
+        self._current_id = example_id
+        self.text.configure(state="normal")
+        self.text.delete("1.0", "end")
+        self.text.insert("end", f"{ex.title}\n", "title")
+        self.text.insert("end", f"{ex.category} · {ex.id}\n\n", "meta")
+        self.text.insert("end", f"{ex.description}\n\n", "desc")
+        for step in ex.steps:
+            tag = step.frontend if step.frontend in ("cli", "repl", "tui", "gui") else "meta"
+            label = step.frontend.upper().rjust(4)
+            self.text.insert("end", f"  {label}  ", tag)
+            self.text.insert("end", f"{step.command}\n", "cmd")
+            if step.note:
+                self.text.insert("end", f"        {step.note}\n", "note")
+        if ex.tags:
+            self.text.insert("end", "\n  tags: " + ", ".join(ex.tags) + "\n", "tags")
+        self.text.configure(state="disabled")
+
+    # ---- teardown ------------------------------------------------------
+
+    def _close(self) -> None:
+        try:
+            self.dlg.destroy()
+        except tk.TclError:
+            pass
+
+
 class DarkcatGUI:
     def __init__(self, cfg: Config) -> None:
         self.cfg = cfg
@@ -1431,51 +1904,21 @@ class DarkcatGUI:
         dlg.focus_set()
 
     def _show_chat_hub(self) -> None:
-        """Stub for the multi-protocol Chat hub — F3 / Chat → Chat hub.
+        """Open the multi-protocol Chat hub — F3 / Chat → Chat hub.
 
-        Phase 2 will replace this with the real ChatHubWindow that
-        aggregates conversations from every logged-in chat backend into
-        one tree view, grouped by protocol and tagged by transport
-        network. The binding + menu entry is wired now so users can
-        discover the F3 slot from day one."""
-        self._popup_message(
-            title="darkcat — chat hub",
-            heading="Multi-protocol chat hub",
-            body=(
-                "Coming in Phase 2.\n\n"
-                "The hub will aggregate conversations from every logged-in "
-                "chat backend into one tree view, grouped by protocol "
-                "(telegram / matrix / xmpp / simplex / session / tox / "
-                "briar / ricochet) and tagged by transport network "
-                "(tor / i2p / clearnet).\n\n"
-                "Until then, use Chat → Chat console (Ctrl+Shift+C) to "
-                "drive a single persona at a time."
-            ),
-        )
+        A Toplevel with a Treeview listing every chat-capable persona,
+        its protocol, transport, channel count, unread total, and the
+        per-entry status. Auto-refresh interval is read from
+        ``~/.darkcat/hub.json`` (default 30s) and changeable via the
+        Combobox or `r` for manual refresh.
+        """
+        ChatHubWindow(self.root, mono=self._mono)
 
     def _show_examples(self) -> None:
-        """Stub for the examples cheatsheet — F11 / Help → Examples.
-
-        Phase 3 will replace this with the real ExamplesWindow rendering
-        curated worked examples for common workflows (signup, login,
-        send-message, fetch-peer, enable-transport, etc.). The binding +
-        menu entry is wired now so the F11 slot is reserved from day one."""
-        self._popup_message(
-            title="darkcat — examples",
-            heading="Examples cheatsheet",
-            body=(
-                "Coming in Phase 3.\n\n"
-                "Will surface copy-pasteable examples for:\n"
-                "  • Create a persona / encrypt the vault\n"
-                "  • Login to Telegram / Matrix / XMPP / Simplex / Session\n"
-                "  • Send a message through Simplex / Session\n"
-                "  • Login to ProtonMail / Tutanota / Disroot SMTP+IMAP\n"
-                "  • Fetch a Tor / I2P / Gemini page\n"
-                "  • Walk Tor / I2P peer lists\n"
-                "  • Enable / re-probe transports\n\n"
-                "Each entry will show the exact CLI / REPL / TUI / GUI path."
-            ),
-        )
+        """Open the examples cheatsheet — F11 / Help → Examples. Renders
+        the curated catalog from :mod:`darkcat.help_examples` with the
+        same four colour-coded frontend tags used by the CLI and TUI."""
+        ExamplesWindow(self.root, mono=self._mono)
 
     def _popup_message(self, *, title: str, heading: str, body: str) -> None:
         """Reusable info dialog — same look as the doctor / examples panels.

@@ -1460,6 +1460,360 @@ class ConfirmRevealScreen(ModalScreen[bool]):
         self.dismiss(False)
 
 
+class ExamplesScreen(ModalScreen[None]):
+    """Curated worked examples cheatsheet — F11. A category-grouped index
+    on the left, the rendered example body on the right. Arrow keys
+    navigate; ``/`` starts a substring filter; Esc / q close.
+
+    Data comes from :mod:`darkcat.help_examples`, the same catalog the
+    CLI (`darkcat examples`) and REPL (`examples`) render."""
+
+    BINDINGS = [
+        Binding("escape",     "close", "Close", show=True),
+        Binding("q",          "close", "Close", show=False),
+        Binding("slash",      "focus_search", "Search", show=True),
+        Binding("up",         "prev_item", "Prev", show=False),
+        Binding("down",       "next_item", "Next", show=False),
+    ]
+
+    DEFAULT_CSS = """
+    ExamplesScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    ExamplesScreen #card {
+        width: 130; max-width: 96%; height: 40; max-height: 92%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    ExamplesScreen #title { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    ExamplesScreen #search-input {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+    }
+    ExamplesScreen #body-row { height: 1fr; }
+    ExamplesScreen #sidebar {
+        width: 38; background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; padding: 0 1;
+    }
+    ExamplesScreen #body {
+        width: 1fr; background: #0a1108; color: #00ff66;
+        border: solid #5c8c70; padding: 0 1; margin-left: 1;
+    }
+    ExamplesScreen #close-row { height: 3; padding-top: 1; align-horizontal: right; }
+    """
+
+    def __init__(self, initial_query: str = "") -> None:
+        super().__init__()
+        self._query = initial_query
+        self._filtered: list = []
+        self._selected_idx: int = 0
+
+    def compose(self) -> ComposeResult:
+        from darkcat import help_examples
+        with Vertical(id="card"):
+            yield Static("Examples cheatsheet", id="title")
+            yield Input(placeholder="filter (substring across id / title / tags)",
+                        id="search-input", value=self._query)
+            with Horizontal(id="body-row"):
+                yield RichLog(highlight=False, markup=True, wrap=True, id="sidebar")
+                yield RichLog(highlight=False, markup=True, wrap=True, id="body")
+            with Horizontal(id="close-row"):
+                yield Button("Close", id="close", variant="default")
+
+    def on_mount(self) -> None:
+        self._refresh_list()
+
+    # ---- buttons / inputs ---------------------------------------------
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close":
+            self.dismiss(None)
+
+    def on_input_changed(self, event: Input.Changed) -> None:
+        if event.input.id == "search-input":
+            self._query = event.value
+            self._selected_idx = 0
+            self._refresh_list()
+
+    # ---- actions -------------------------------------------------------
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_focus_search(self) -> None:
+        try:
+            self.query_one("#search-input", Input).focus()
+        except Exception:  # noqa: BLE001
+            pass
+
+    def action_next_item(self) -> None:
+        if not self._filtered:
+            return
+        self._selected_idx = (self._selected_idx + 1) % len(self._filtered)
+        self._render_sidebar()
+        self._render_body()
+
+    def action_prev_item(self) -> None:
+        if not self._filtered:
+            return
+        self._selected_idx = (self._selected_idx - 1) % len(self._filtered)
+        self._render_sidebar()
+        self._render_body()
+
+    # ---- rendering -----------------------------------------------------
+
+    def _refresh_list(self) -> None:
+        from darkcat import help_examples
+        self._filtered = help_examples.search(self._query) if self._query \
+            else list(help_examples.EXAMPLES)
+        if self._selected_idx >= len(self._filtered):
+            self._selected_idx = max(0, len(self._filtered) - 1)
+        self._render_sidebar()
+        self._render_body()
+
+    def _render_sidebar(self) -> None:
+        try:
+            log = self.query_one("#sidebar", RichLog)
+        except Exception:  # noqa: BLE001
+            return
+        log.clear()
+        if not self._filtered:
+            log.write("[#888888](no matches)[/]")
+            return
+        current_cat: Optional[str] = None
+        for i, ex in enumerate(self._filtered):
+            if ex.category != current_cat:
+                log.write(f"[bold #ff00aa]{ex.category}[/]")
+                current_cat = ex.category
+            marker = "[#00e5ff]>[/]" if i == self._selected_idx else " "
+            log.write(f"  {marker} [#00ff66]{ex.id}[/]")
+
+    def _render_body(self) -> None:
+        from darkcat import help_examples
+        try:
+            log = self.query_one("#body", RichLog)
+        except Exception:  # noqa: BLE001
+            return
+        log.clear()
+        if not self._filtered:
+            log.write("[#888888](no matches — clear the filter to see all)[/]")
+            return
+        ex = self._filtered[self._selected_idx]
+        for line in help_examples.render_one(ex).splitlines():
+            log.write(line)
+
+
+class ChatHubScreen(ModalScreen[None]):
+    """Multi-protocol chat hub — F3. Aggregates every chat-capable persona
+    into one DataTable and auto-refreshes on a configurable interval.
+
+    Bindings:
+      r           manual refresh (also forces a snapshot now)
+      + / -       next / previous preset interval
+      0           switch to manual-only (off)
+      escape / q  close
+    """
+
+    BINDINGS = [
+        Binding("escape", "close",   "Close",   show=True),
+        Binding("q",      "close",   "Close",   show=False),
+        Binding("r",      "refresh", "Refresh", show=True),
+        Binding("plus",   "interval_next", "Slower", show=True),
+        Binding("equals_sign", "interval_next", "Slower", show=False),
+        Binding("minus",  "interval_prev", "Faster", show=True),
+        Binding("0",      "interval_off",  "Manual", show=True),
+    ]
+
+    DEFAULT_CSS = """
+    ChatHubScreen { align: center middle; background: rgba(0,0,0,0.7); }
+    ChatHubScreen #card {
+        width: 110; max-width: 96%; height: auto; max-height: 92%;
+        padding: 1 2; background: #050a06; border: heavy #ff00aa;
+    }
+    ChatHubScreen #title  { color: #00e5ff; text-style: bold; padding-bottom: 1; }
+    ChatHubScreen #status { color: #5c8c70; padding-bottom: 1; }
+    ChatHubScreen DataTable {
+        background: #0a1108; color: #00ff66; border: solid #5c8c70;
+        height: auto; max-height: 28;
+    }
+    ChatHubScreen #close-row {
+        height: 3; padding-top: 1; align-horizontal: right;
+    }
+    """
+
+    def __init__(self) -> None:
+        super().__init__()
+        self._entries: list = []
+        self._busy: bool = False
+        self._timer = None
+        self._last_refresh_ts: float = 0.0
+
+    def compose(self) -> ComposeResult:
+        with Vertical(id="card"):
+            yield Static("Multi-protocol chat hub", id="title")
+            yield Static("(loading…)", id="status")
+            tbl = DataTable(zebra_stripes=True, cursor_type="row")
+            tbl.add_columns(
+                "Persona", "Network", "Transport",
+                "Channels", "Unread", "Status",
+            )
+            yield tbl
+            with Horizontal(id="close-row"):
+                yield Button("Refresh", id="refresh", variant="primary")
+                yield Button("Close",   id="close",   variant="default")
+
+    def on_mount(self) -> None:
+        self._kick_refresh()
+        self._restart_timer()
+
+    def on_unmount(self) -> None:
+        self._stop_timer()
+
+    # ---- buttons -------------------------------------------------------
+
+    def on_button_pressed(self, event: Button.Pressed) -> None:
+        if event.button.id == "close":
+            self.dismiss(None)
+        elif event.button.id == "refresh":
+            self._kick_refresh()
+
+    # ---- actions -------------------------------------------------------
+
+    def action_close(self) -> None:
+        self.dismiss(None)
+
+    def action_refresh(self) -> None:
+        self._kick_refresh()
+
+    def action_interval_next(self) -> None:
+        self._step_interval(+1)
+
+    def action_interval_prev(self) -> None:
+        self._step_interval(-1)
+
+    def action_interval_off(self) -> None:
+        from darkcat import hub_config
+        hub_config.set_interval(0)
+        self._restart_timer()
+        self._render_status()
+
+    # ---- internals -----------------------------------------------------
+
+    def _step_interval(self, direction: int) -> None:
+        from darkcat import hub_config
+        presets = hub_config.INTERVAL_PRESETS
+        current = hub_config.get_interval()
+        idx = 0
+        for i, (_lbl, secs) in enumerate(presets):
+            if secs == current:
+                idx = i
+                break
+        idx = max(0, min(len(presets) - 1, idx + direction))
+        hub_config.set_interval(presets[idx][1])
+        self._restart_timer()
+        self._render_status()
+
+    def _restart_timer(self) -> None:
+        from darkcat import hub_config
+        self._stop_timer()
+        secs = hub_config.get_interval()
+        if secs > 0:
+            self._timer = self.set_interval(secs, self._kick_refresh)
+
+    def _stop_timer(self) -> None:
+        if self._timer is not None:
+            try:
+                self._timer.stop()
+            except Exception:  # noqa: BLE001
+                pass
+            self._timer = None
+
+    def _kick_refresh(self) -> None:
+        if self._busy:
+            return
+        self._busy = True
+        self._render_status(loading=True)
+        self.run_worker(self._refresh_worker, thread=True, exclusive=True)
+
+    def _refresh_worker(self) -> None:
+        try:
+            import os
+            from darkcat.chat import hub as chat_hub
+            from darkcat.personas import Vault
+
+            passphrase = os.environ.get("DARKCAT_VAULT_PASSPHRASE") or None
+            try:
+                vault = Vault(passphrase=passphrase)
+            except RuntimeError as e:
+                self.app.call_from_thread(self._on_refresh_error, str(e))
+                return
+            entries = chat_hub.aggregate(vault)
+            self.app.call_from_thread(self._on_refresh_done, entries)
+        except Exception as e:  # noqa: BLE001
+            self.app.call_from_thread(self._on_refresh_error, f"{type(e).__name__}: {e}")
+
+    def _on_refresh_done(self, entries: list) -> None:
+        self._entries = entries
+        self._last_refresh_ts = time.time()
+        self._busy = False
+        self._render_table()
+        self._render_status()
+
+    def _on_refresh_error(self, msg: str) -> None:
+        self._busy = False
+        try:
+            status = self.query_one("#status", Static)
+            status.update(f"[#ff1a4b]refresh failed:[/] {msg}")
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _render_table(self) -> None:
+        from darkcat.chat import hub as chat_hub
+
+        try:
+            tbl = self.query_one(DataTable)
+        except Exception:  # noqa: BLE001
+            return
+        tbl.clear()
+        for entry in self._entries:
+            unread = sum(int(c.unread or 0) for c in entry.channels)
+            status_lbl = entry.status
+            if entry.error and entry.status in (
+                chat_hub.STATUS_AUTH,
+                chat_hub.STATUS_ERROR,
+                chat_hub.STATUS_UNAVAILABLE,
+            ):
+                status_lbl = f"{entry.status}: {entry.error[:40]}"
+            tbl.add_row(
+                entry.persona_name,
+                entry.network,
+                entry.transport or "-",
+                str(len(entry.channels)),
+                str(unread),
+                status_lbl,
+            )
+
+    def _render_status(self, *, loading: bool = False) -> None:
+        from darkcat import hub_config
+        from darkcat.chat import hub as chat_hub
+
+        try:
+            status = self.query_one("#status", Static)
+        except Exception:  # noqa: BLE001
+            return
+        interval_lbl = hub_config.interval_label(hub_config.get_interval())
+        totals = chat_hub.summarize(self._entries)
+        last = (
+            time.strftime("%H:%M:%S", time.localtime(self._last_refresh_ts))
+            if self._last_refresh_ts else "—"
+        )
+        spinner = " (refreshing…)" if loading else ""
+        status.update(
+            f"refresh [#00e5ff]{interval_lbl}[/] · last [#00e5ff]{last}[/] · "
+            f"{totals['personas']} persona(s), "
+            f"{totals['channels']} channel(s), "
+            f"{totals['unread']} unread, "
+            f"{totals['errors']} error(s)"
+            f"{spinner}"
+        )
+
+
 class ChatScreen(_VaultUnlockMixin, ModalScreen[None]):
     """Chat console — pick persona, action, fields → invoke ``cmd_chat``.
 
@@ -2440,40 +2794,17 @@ class DarkcatApp(App):
     def action_show_chat_hub(self) -> None:
         """Open the multi-protocol Chat hub — F3. Aggregates conversations
         from every logged-in chat backend (telegram, matrix, xmpp, simplex,
-        session, tox, briar, ricochet) into one tree view.
-
-        Phase 2 will replace this stub with the real ChatHubScreen. The
-        binding is wired now so users discover the F3 slot from day one."""
-        body = (
-            "Multi-protocol chat hub — coming in Phase 2.\n\n"
-            "The hub will aggregate conversations from every logged-in\n"
-            "chat backend into one tree view, grouped by protocol and\n"
-            "tagged by transport network (tor / i2p / clearnet).\n\n"
-            "Until then, press 'c' to open the per-persona chat console\n"
-            "(login / list / read / send / join / leave / connect)."
-        )
-        self.push_screen(ResultScreen("Chat hub", body))
+        session, tox, briar, ricochet) into one DataTable, auto-refreshed
+        on the interval persisted in ``~/.darkcat/hub.json`` (default 30s).
+        """
+        self.push_screen(ChatHubScreen())
 
     def action_show_examples(self) -> None:
         """Open the examples cheatsheet — F11. Curated worked examples for
         common workflows (signup, login, send-message, fetch-peer, enable
-        transport, etc.) rendered with Rich markup.
-
-        Phase 3 will replace this stub with the real ExamplesScreen. The
-        binding is wired now so the F11 slot is reserved from day one."""
-        body = (
-            "Examples cheatsheet — coming in Phase 3.\n\n"
-            "Will surface curated, copy-pasteable examples for:\n"
-            "  - Create a persona / encrypt the vault\n"
-            "  - Login to Telegram / Matrix / XMPP / Simplex / Session\n"
-            "  - Send a message through Simplex / Session\n"
-            "  - Login to ProtonMail / Tutanota / Disroot SMTP+IMAP\n"
-            "  - Fetch a Tor / I2P / Gemini page\n"
-            "  - Walk Tor / I2P peer lists\n"
-            "  - Enable / re-probe transports\n"
-            "Each entry shows the exact CLI / REPL / TUI / GUI path."
-        )
-        self.push_screen(ResultScreen("Examples", body))
+        transport, etc.) rendered with Rich markup from
+        :mod:`darkcat.help_examples`."""
+        self.push_screen(ExamplesScreen())
 
     def action_show_score_help(self) -> None:
         """Dump the score / category formula into the log on `?`. Renders as
@@ -2502,12 +2833,12 @@ class DarkcatApp(App):
             page_stats = self.storage.stats()
             find_stats = self.storage.findings_stats()
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff1a4b]✗ stats failed:[/] "
                 f"[#ffb000]{type(e).__name__}: {self._esc(e)}[/]",
             )
-            self.call_from_thread(self._busy.__setitem__, "stats", False)
+            self.app.call_from_thread(self._busy.__setitem__, "stats", False)
             return
         self.call_from_thread(self._render_stats, page_stats, find_stats)
         self.call_from_thread(self._busy.__setitem__, "stats", False)
@@ -2571,12 +2902,12 @@ class DarkcatApp(App):
         try:
             rows = self.storage.near_duplicates_of(url, distance=3, limit=20)
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff1a4b]✗ mirrors lookup failed:[/] "
                 f"[#ffb000]{type(e).__name__}: {self._esc(e)}[/]",
             )
-            self.call_from_thread(self._busy.__setitem__, "mirrors", False)
+            self.app.call_from_thread(self._busy.__setitem__, "mirrors", False)
             return
         self.call_from_thread(self._render_mirrors, url, list(rows))
         self.call_from_thread(self._busy.__setitem__, "mirrors", False)
@@ -2617,12 +2948,12 @@ class DarkcatApp(App):
         try:
             rows = self.storage.page_history_for(url, limit=10)
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff1a4b]✗ history lookup failed:[/] "
                 f"[#ffb000]{type(e).__name__}: {self._esc(e)}[/]",
             )
-            self.call_from_thread(self._busy.__setitem__, "history", False)
+            self.app.call_from_thread(self._busy.__setitem__, "history", False)
             return
         self.call_from_thread(self._render_history, url, list(rows))
         self.call_from_thread(self._busy.__setitem__, "history", False)
@@ -2703,7 +3034,7 @@ class DarkcatApp(App):
             except OSError as e:
                 last_err = f"{base}: {e}"
                 continue
-            self.call_from_thread(self._on_export_done, True, target, len(snapshot), None)
+            self.app.call_from_thread(self._on_export_done, True, target, len(snapshot), None)
             return
         self.call_from_thread(
             self._on_export_done, False, Path(fname), len(snapshot),
@@ -2929,20 +3260,20 @@ class DarkcatApp(App):
 
     def _toggle_worker(self, proto: Protocol) -> None:
         try:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff00aa]▓▒░ {proto.value.upper()} ░▒▓[/]",
             )
             running = self.control.is_running(proto)
             for ev in self.control.probe(proto):
-                self.call_from_thread(self._log_control_event, *ev)
+                self.app.call_from_thread(self._log_control_event, *ev)
             gen = self.control.down(proto) if running else self.control.up(proto)
             for ev in gen:
-                self.call_from_thread(self._log_control_event, *ev)
-            self.call_from_thread(self._log, "[#5c8c70]  · re-probing transports…[/]")
+                self.app.call_from_thread(self._log_control_event, *ev)
+            self.app.call_from_thread(self._log, "[#5c8c70]  · re-probing transports…[/]")
         finally:
             self._toggling.discard(proto)
-            self.call_from_thread(self.action_refresh_status)
+            self.app.call_from_thread(self.action_refresh_status)
 
     def _log_control_event(self, level: str, text: str) -> None:
         style = self._CTRL_STYLE.get(level, "#00ff66")
@@ -2972,7 +3303,7 @@ class DarkcatApp(App):
                 done.set()  # don't deadlock the worker if push fails
 
         try:
-            self.call_from_thread(_open)
+            self.app.call_from_thread(_open)
         except Exception:
             return None
         done.wait()
@@ -3025,11 +3356,11 @@ class DarkcatApp(App):
         self._active_crawler = crawler
 
         def on_event(kind: str, payload: dict) -> None:
-            self.call_from_thread(self._handle_crawl_event, kind, payload)
+            self.app.call_from_thread(self._handle_crawl_event, kind, payload)
 
         try:
             stats = crawler.crawl(seeds, on_event=on_event)
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff00aa]▓▒░[/] [bold #00ff66]done[/]  "
                 f"[#5c8c70]fetched=[/][#00ff66]{stats.fetched}[/]  "
@@ -3037,14 +3368,14 @@ class DarkcatApp(App):
                 f"[#5c8c70]skipped=[/][#5c8c70]{stats.skipped}[/]",
             )
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._log,
                 f"[bold #ff1a4b]✗ crawl crashed:[/] [#ffb000]{e}[/]",
             )
         finally:
             self._active_crawler = None
-            self.call_from_thread(self._set_crawling, False)
-            self.call_from_thread(self.refresh_results)
+            self.app.call_from_thread(self._set_crawling, False)
+            self.app.call_from_thread(self.refresh_results)
 
     def _set_crawling(self, value: bool) -> None:
         self.crawling = value
@@ -3131,7 +3462,7 @@ class DarkcatApp(App):
         try:
             rows = self.storage.search(q, limit=200)
         except Exception as e:
-            self.call_from_thread(self._on_search_done, q, [], f"{type(e).__name__}: {e}")
+            self.app.call_from_thread(self._on_search_done, q, [], f"{type(e).__name__}: {e}")
             return
         self.call_from_thread(self._on_search_done, q, list(rows), None)
 
@@ -3181,7 +3512,7 @@ class DarkcatApp(App):
         except (KeyboardInterrupt, SystemExit):
             raise
         except Exception as e:
-            self.call_from_thread(
+            self.app.call_from_thread(
                 self._on_fetch_done, None, f"{type(e).__name__}: {e}",
             )
             return
@@ -3216,7 +3547,7 @@ class DarkcatApp(App):
         try:
             rows = self.storage.top(limit=200)
         except Exception as e:
-            self.call_from_thread(self._on_results_done, [], f"{type(e).__name__}: {e}")
+            self.app.call_from_thread(self._on_results_done, [], f"{type(e).__name__}: {e}")
             return
         self.call_from_thread(self._on_results_done, list(rows), None)
 
