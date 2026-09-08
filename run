@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# ./run — one command to start darkcat.
+#
+#   ./run [args]          darkcat
+#   
+#   First run creates .venv and installs the package editable
+#   (uv when available, else python3 -m venv + pip); later runs skip it.
+#
+# Everything is relative to this file, so it works from any directory.
+set -euo pipefail
+cd "$(dirname "$(readlink -f "$0")")"
+
+VENV=".venv"
+if [ ! -x "$VENV/bin/python" ]; then
+    echo "· creating $VENV (first run only)…" >&2
+    if command -v uv >/dev/null 2>&1; then
+        uv venv "$VENV"
+        VIRTUAL_ENV="$PWD/$VENV" uv pip install -e .
+    else
+        python3 -m venv "$VENV"
+        "$VENV/bin/pip" install -q --upgrade pip
+        "$VENV/bin/pip" install -q -e .
+    fi
+fi
+
+CMD="darkcat"
+
+exec "$VENV/bin/$CMD" "$@"

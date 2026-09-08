@@ -638,3 +638,31 @@ Run `darkcat init` once for a guided first-run bootstrap.
 - For Lokinet, GNUnet, Yggdrasil, and cjdns we can't probe daemon state
   without root, so `status` shows them as reachable and a fetch failure
   is reported as `unavailable: <reason>`.
+
+## Documentation
+
+- [`CHANGELOG.md`](CHANGELOG.md) — what changed, by version
+
+<!-- LYNX-EP-FOOTER:BEGIN -->
+
+---
+
+## Entry point
+
+New here, or coming back after a while? Read [`index.ep.md`](index.ep.md) (or open [`index.ep.html`](index.ep.html) in a browser) — the standard card that answers what this is, where to look first, and how to run it, in the same shape for every project.
+
+🟠 **PAUSED** · last touched **10 June 2026**
+
+## Ownership
+
+<img src="https://www.cortex-university.com/static/brand/lince-logo.png" alt="Lince" width="96" height="96" align="left" style="margin-right:16px" />
+
+**Darkcat is proudly part of Lince.**
+
+| Company ID | Headquarters |
+|---|---|
+| 3015071-2 | Helsinki, Finland |
+
+Part of the LINCE company · © All rights reserved
+
+<!-- LYNX-EP-FOOTER:END -->
