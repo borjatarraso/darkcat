@@ -5,20 +5,32 @@
 #   
 #   First run creates .venv and installs the package editable
 #   (uv when available, else python3 -m venv + pip); later runs skip it.
+#   A .venv whose python no longer runs is rebuilt; a missing install is redone.
 #
 # Everything is relative to this file, so it works from any directory.
 set -euo pipefail
 cd "$(dirname "$(readlink -f "$0")")"
 
 VENV=".venv"
-if [ ! -x "$VENV/bin/python" ]; then
+if ! "$VENV/bin/python" -c pass >/dev/null 2>&1; then
+    if [ -e "$VENV" ]; then
+        echo "· $VENV cannot run its python (moved or half-built) — rebuilding it…" >&2
+        rm -rf "$VENV"
+    fi
     echo "· creating $VENV (first run only)…" >&2
     if command -v uv >/dev/null 2>&1; then
         uv venv "$VENV"
-        VIRTUAL_ENV="$PWD/$VENV" uv pip install -e .
     else
         python3 -m venv "$VENV"
         "$VENV/bin/pip" install -q --upgrade pip
+    fi
+fi
+if ! [ -x "$VENV/bin/darkcat" ]; then
+    echo "· installing the package into $VENV…" >&2
+    if command -v uv >/dev/null 2>&1; then
+        VIRTUAL_ENV="$PWD/$VENV" uv pip install -e .
+    else
+        [ -x "$VENV/bin/pip" ] || "$VENV/bin/python" -m ensurepip -q
         "$VENV/bin/pip" install -q -e .
     fi
 fi
