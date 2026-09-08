@@ -15,7 +15,7 @@ ep_locked: false   # set true and this file is never regenerated
 
 > Dark-web gateway tools
 
-🟠 **PAUSED** · last touched **10 June 2026** (last commit)
+🟠 **PAUSED** · last touched **10 June 2026** (last commit to project files)
 
 ---
 
