@@ -81,7 +81,7 @@ module map.
 
 This project carries `index.ep.md` (and `index.ep.html`), the standard card
 that answers what this is, where to look first, and how to run it. Every
-project in `~/claude/` has one in the same shape, so jumping between them
+project in `~/devel/` has one in the same shape, so jumping between them
 does not mean re-learning where to look.
 
 **When work here changes any of the following, refresh the card:**
@@ -94,7 +94,7 @@ does not mean re-learning where to look.
 Refresh it with:
 
 ```bash
-python3 ~/claude/lynx_factory/web/tools/gen_ep_index.py --only <this-project>
+python3 ~/devel/lynx_factory/web/tools/gen_ep_index.py --only <this-project>
 ```
 
 That regenerates from this repo's own README/CLAUDE.md plus the Lynx Factory

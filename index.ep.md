@@ -74,7 +74,7 @@ Emit findings as a hash-based IOC feed for SOC/TIP integration. Only the SHA-256
 ## Run it
 
 ```bash
-cd ~/claude/darkcat
+cd ~/devel/darkcat
 ./run                                 # project runner
 darkcat                               # console entry point
 python3 -m darkcat                    # runnable package
