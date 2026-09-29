@@ -27,6 +27,13 @@ supported protocol.
 > censorship-resistant content, or interop testing. You are responsible
 > for what you fetch and where you point it. Don't use it to break laws.
 
+## Quick install
+
+```bash
+make    # create .venv and install the package + its dependencies
+./run   # start with the defaults
+```
+
 ## Supported protocols
 
 | Family | URL form | Transport / requirement |
