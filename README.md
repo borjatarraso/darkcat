@@ -30,10 +30,10 @@ supported protocol.
 ## Quick install
 
 ```bash
-make    # create .venv and install the package + its dependencies
-./run   # start with the defaults
+make          # create .venv and install the package + its dependencies
+make check    # verify the toolchain / build
+./run         # start with the defaults
 ```
-
 ## Supported protocols
 
 | Family | URL form | Transport / requirement |
