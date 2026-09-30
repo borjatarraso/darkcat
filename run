@@ -2,11 +2,11 @@
 # ./run — one command to start darkcat.
 #
 #   ./run [args]          darkcat
-#   
+#
 #   First run creates .venv and installs the package editable
 #   (uv when available, else python3 -m venv + pip); later runs skip it.
 #   A .venv whose python no longer runs is rebuilt; a missing install is redone.
-#   
+#
 #   RUN_MODE=deps ./run    install dependencies and exit (what make runs)
 #   RUN_MODE=check ./run   verify the python3 toolchain is present
 #
